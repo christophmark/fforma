@@ -221,7 +221,7 @@ class FForma:
 
         return gbm_best_model
 
-    def train(self, X_feats=None, y_best_model=None, contribution_to_error=None, n_models=None, random_state=110, threads=None, max_evals=10):
+    def train(self, X_feats=None, y_best_model=None, contribution_to_error=None, n_models=None, random_state=110, threads=None, max_evals=100):
         """
         Train xgboost with randomized
         """
