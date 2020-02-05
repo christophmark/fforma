@@ -16,7 +16,7 @@ from tsfeatures import tsfeatures
 
 
 class FForma:
-    def __init__(self, ts_list, ts_val_list, ts_hat_val_list, ts_hat_list, frcy):
+    def __init__(self, ts_list, ts_val_list, ts_hat_val_list, ts_hat_list, frcy, max_evals=100):
         '''
         ts: array of time series
         ts_val: array of time series with obs for validation
@@ -35,6 +35,8 @@ class FForma:
         ) 
         
         self.n_models = len(ts_hat_val_list[0])
+        
+        self.max_evals=max_evals
     
     def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy):
         '''
@@ -221,7 +223,8 @@ class FForma:
 
         return gbm_best_model
 
-    def train(self, X_feats=None, y_best_model=None, contribution_to_error=None, n_models=None, random_state=110, threads=None, max_evals=100):
+    def train(self, X_feats=None, y_best_model=None, 
+              contribution_to_error=None, n_models=None, random_state=110, threads=None):
         """
         Train xgboost with randomized
         """
@@ -267,7 +270,7 @@ class FForma:
             'disable_default_eval_metric': 1
         }
 
-        self.xgb = self._wrapper_best_xgb(threads, random_state, max_evals)
+        self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
 
         self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats))
 
