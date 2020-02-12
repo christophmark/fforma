@@ -16,7 +16,7 @@ from tsfeatures import tsfeatures
 
 
 class FForma:
-    def __init__(self, ts_list, ts_val_list, ts_hat_val_list, ts_hat_list, frcy, max_evals=100):
+    def __init__(self, ts_list=None, ts_val_list=None, ts_hat_val_list=None, ts_hat_list=None, frcy=None, max_evals=100):
         '''
         ts: array of time series
         ts_val: array of time series with obs for validation
@@ -224,7 +224,7 @@ class FForma:
         return gbm_best_model
 
     def train(self, X_feats=None, y_best_model=None, 
-              contribution_to_error=None, n_models=None, random_state=110, threads=None):
+              contribution_to_error=None, n_models=None, max_evals=None, random_state=110, threads=None):
         """
         Train xgboost with randomized
         """
@@ -243,6 +243,9 @@ class FForma:
             
         if n_models is not None:
             self.n_models = n_models
+            
+        if max_evals is not None:
+            self.max_evals = max_evals
         
 
         # Train-validation sets for XGBoost
