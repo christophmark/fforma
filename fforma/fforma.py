@@ -23,20 +23,21 @@ class FForma:
         ts_hat_val: predictions for validation set
         ts_hat: predictions
         '''
-        self.ts_list = ts_list
-        self.ts_val_list = ts_val_list
-        self.ts_hat_val_list = ts_hat_val_list
-        self.ts_hat_list = ts_hat_list
-        self.frcy = frcy
-        
-        print('Setting model')
-        self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
-            ts_list, ts_val_list, ts_hat_val_list, frcy
-        ) 
-        
-        self.n_models = len(ts_hat_val_list[0])
-        
-        self.max_evals=max_evals
+        if ts_list is not None:
+            self.ts_list = ts_list
+            self.ts_val_list = ts_val_list
+            self.ts_hat_val_list = ts_hat_val_list
+            self.ts_hat_list = ts_hat_list
+            self.frcy = frcy
+
+            print('Setting model')
+            self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
+                ts_list, ts_val_list, ts_hat_val_list, frcy
+            ) 
+
+            self.n_models = len(ts_hat_val_list[0])
+
+            self.max_evals=max_evals
     
     def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy):
         '''
