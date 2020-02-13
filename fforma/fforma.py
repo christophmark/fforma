@@ -146,7 +146,7 @@ class FForma:
         #print(predt)
         preds_transformed = predt#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
-        fforma_loss = weighted_avg_loss_func.sum()
+        fforma_loss = weighted_avg_loss_func.nansum()
         #print(grad)
         return 'FFORMA-loss', fforma_loss
 
