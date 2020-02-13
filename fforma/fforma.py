@@ -161,7 +161,7 @@ class FForma:
             feval=self.fforma_loss,
             evals=[(self.dtrain, 'eval'), (self.dvalid, 'train')],
             early_stopping_rounds=99,
-            verbose_eval = False
+            verbose_eval = True
         )
 
         return gbm_model
