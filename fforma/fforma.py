@@ -146,7 +146,7 @@ class FForma:
         #print(predt)
         preds_transformed = predt#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
-        fforma_loss = np.nansum(weighted_avg_loss_func)
+        fforma_loss = weighted_avg_loss_func.sum()
         #print(grad)
         return 'FFORMA-loss', fforma_loss
 
@@ -161,7 +161,7 @@ class FForma:
             feval=self.fforma_loss,
             evals=[(self.dtrain, 'eval'), (self.dvalid, 'train')],
             early_stopping_rounds=99,
-            verbose_eval = True
+            verbose_eval = False
         )
 
         return gbm_model
