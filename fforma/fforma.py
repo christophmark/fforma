@@ -260,8 +260,8 @@ class FForma:
                 np.arange(self.X_feats.shape[0])
             )
 
-        self.dtrain = xgb.DMatrix(data=X_train_xgb, label=indices_train)
-        self.dvalid = xgb.DMatrix(data=X_val, label=indices_val)
+        self.dtrain = xgb.DMatrix(data=X_train_xgb, label=y_train_xgb)#indices_train)
+        self.dvalid = xgb.DMatrix(data=X_val, label=y_val)#indices_val)
 
         self.init_params = {
             'objective': 'multi:softprob',
@@ -272,14 +272,14 @@ class FForma:
             #'booster': 'gbtree',
             #'tree_method': 'exact',
             'silent': 1,
-            'seed': random_state,
-            'disable_default_eval_metric': 1
+            'seed': random_state#,
+            #'disable_default_eval_metric': 1
         }
 
         self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
 
-        self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats), output_margin = True)
-        self.opt_weights = softmax(self.opt_weights, axis=1)
+        self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats))#, output_margin = True)
+        #self.opt_weights = softmax(self.opt_weights, axis=1)
 
         return self
 
