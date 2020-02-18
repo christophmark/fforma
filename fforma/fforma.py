@@ -130,6 +130,9 @@ class FForma:
         #print(predt.shape)
         #print(predt)
         preds_transformed = predt#np.array([softmax(row) for row in predt])
+        print(predt)
+        print(predt.shape)
+        print(self.contribution_to_error.shape)
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
         hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
