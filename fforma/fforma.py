@@ -176,7 +176,7 @@ class FForma:
 
         predictions = gbm_model.predict(
             self.dvalid,
-            ntree_limit=gbm_model.best_iteration + 1#,
+            ntree_limit=gbm_model.best_iteration + 1,
             output_margin = True
         )
 
