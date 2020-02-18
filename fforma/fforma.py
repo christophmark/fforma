@@ -158,9 +158,9 @@ class FForma:
         gbm_model = xgb.train(
             params=params,
             dtrain=self.dtrain,
-            obj=self.error_softmax_obj,
+            #obj=self.error_softmax_obj,
             num_boost_round=999,
-            feval=self.fforma_loss,
+            #feval=self.fforma_loss,
             evals=[(self.dvalid, 'eval'), (self.dtrain, 'train')],
             early_stopping_rounds=99,
             verbose_eval = False
