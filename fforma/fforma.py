@@ -129,14 +129,13 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = softmax(predt, axis=0)#np.array([softmax(row) for row in predt])
+        preds_transformed = softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
         print(predt)
-        print(predt.shape)
-        print(self.contribution_to_error.shape)
+        print(preds_transformed)
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
         hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
-        print(grad)
+        #print(grad)
         return grad.reshape(-1, 1), hess.reshape(-1, 1)
 
     def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
@@ -147,7 +146,7 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = softmax(predt, axis=0)#np.array([softmax(row) for row in predt])
+        preds_transformed = softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         fforma_loss = weighted_avg_loss_func.sum()
         #print(grad)
@@ -280,7 +279,7 @@ class FForma:
         self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
 
         self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats), output_margin = True)
-        self.opt_weights = softmax(self.opt_weights, axis=0)
+        self.opt_weights = softmax(self.opt_weights, axis=1)
 
         return self
 
