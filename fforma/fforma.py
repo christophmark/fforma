@@ -129,7 +129,7 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = predt#np.array([softmax(row) for row in predt])
+        preds_transformed = softmax(predt, axis=0)#np.array([softmax(row) for row in predt])
         print(predt)
         print(predt.shape)
         print(self.contribution_to_error.shape)
@@ -147,7 +147,7 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = predt#np.array([softmax(row) for row in predt])
+        preds_transformed = softmax(predt, axis=0)#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         fforma_loss = weighted_avg_loss_func.sum()
         #print(grad)
@@ -162,7 +162,7 @@ class FForma:
             obj=self.error_softmax_obj,
             num_boost_round=999,
             feval=self.fforma_loss,
-            evals=[(self.dtrain, 'eval'), (self.dvalid, 'train')],
+            evals=[(self.dvalid, 'eval'), (self.dtrain, 'train')],
             early_stopping_rounds=99,
             verbose_eval = False
         )
@@ -177,7 +177,7 @@ class FForma:
         predictions = gbm_model.predict(
             self.dvalid,
             ntree_limit=gbm_model.best_iteration + 1#,
-            #output_margin = True
+            output_margin = True
         )
 
         #print(predictions)
@@ -279,7 +279,8 @@ class FForma:
 
         self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
 
-        self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats))
+        self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats), output_margin = True)
+        self.opt_weights = softmax(self.opt_weights, axis=0)
 
         return self
 
