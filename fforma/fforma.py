@@ -129,7 +129,7 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = predt#np.array([softmax(row) for row in predt])
+        preds_transformed = softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         #print(weighted_avg_loss_func.shape)
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
@@ -213,15 +213,15 @@ class FForma:
         # To learn more about XGBoost parameters, head to this page:
         # https://github.com/dmlc/xgboost/blob/master/doc/parameter.md
         space = {
-            'n_estimators': hp.quniform('n_estimators', 10, 1000, 1),
-            'eta': hp.quniform('eta', 0.025, 0.5, 0.025),
+            'n_estimators': hp.quniform('n_estimators', 1, 250, 1),
+            'eta': hp.quniform('eta', 0.001, 1, 0.05),
             # A problem with max_depth casted to float instead of int with
             # the hp.quniform method.
-            'max_depth':  hp.choice('max_depth', np.arange(1, 14, dtype=int)),
-            'min_child_weight': hp.quniform('min_child_weight', 1, 6, 1),
-            'subsample': hp.quniform('subsample', 0.1, 1, 0.05),
-            'gamma': hp.quniform('gamma', 0.1, 1, 0.05),
-            'colsample_bytree': hp.quniform('colsample_bytree', 0.1, 1, 0.05)
+            'max_depth':  hp.choice('max_depth', np.arange(6, 15, dtype=int)),
+            #'min_child_weight': hp.quniform('min_child_weight', 1, 6, 1),
+            'subsample': hp.quniform('subsample', 0.5, 1, 0.1),
+            #'gamma': hp.quniform('gamma', 0.1, 1, 0.05),
+            'colsample_bytree': hp.quniform('colsample_bytree', 0.5, 1, 0.05)
         }
         space = {**space, **self.init_params}
         # Use the fmin function from Hyperopt to find the best hyperparameters
@@ -243,7 +243,9 @@ class FForma:
         return gbm_best_model
 
     def train(self, X_feats=None, y_best_model=None, 
-              contribution_to_error=None, n_models=None, max_evals=None, random_state=110, threads=None, custom_objective=None):
+              contribution_to_error=None, n_models=None, 
+              max_evals=None, random_state=110, threads=None, custom_objective=None,
+              bayesian_opt=False):
         """
         Train xgboost with randomized
         """
@@ -286,7 +288,7 @@ class FForma:
             'nthread': threads,
             #'booster': 'gbtree',
             #'tree_method': 'exact',
-            #'silent': 1,
+            'silent': 1,
             'seed': random_state#,
             #'disable_default_eval_metric': 1
         }
@@ -303,8 +305,21 @@ class FForma:
             self.dtrain = xgb.DMatrix(data=self.X_train_xgb, label=self.y_train_xgb)
             self.dvalid = xgb.DMatrix(data=self.X_val, label=self.y_val)
             self.custom_objective=False
-
-        self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
+            
+        if bayesian_opt:
+            self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
+        else:
+            # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
+            params = {
+                'n_estimators': 94,
+                'eta': 0.58,
+                'max_depth': 14,
+                'subsample': 0.92,
+                'colsample_bytree': 0.77
+            }
+            params = {**params, **self.init_params}
+            
+            self.xgb = self._train_xgboost(params)
 
         self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats))#, output_margin = True)
         #self.opt_weights = softmax(self.opt_weights, axis=1)
