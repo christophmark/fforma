@@ -120,7 +120,7 @@ class FForma:
         return np.abs(ts_test - ts_hat).mean()/den
     
      # Objective function for xgb
-    def error_softmax_obj(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
+    def fforma_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
         '''
         Compute...
         '''
@@ -129,14 +129,17 @@ class FForma:
         n_train = len(y)
         #print(predt.shape)
         #print(predt)
-        preds_transformed = softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
-        print(predt)
-        print(preds_transformed)
+        preds_transformed = predt#np.array([softmax(row) for row in predt])
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
+        #print(weighted_avg_loss_func.shape)
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
-        hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
         #print(grad)
-        return grad.reshape(-1, 1), hess.reshape(-1, 1)
+        #grad = preds_transformer*self.contribution_to_error[y, :]
+        #print(grad.shape)
+        hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
+        #hess = self.contribution_to_error[y, :]
+        #print(grad)
+        return grad.T.flatten()/np.linalg.norm(grad), hess.T.flatten()/np.linalg.norm(hess)
 
     def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
         '''
@@ -147,6 +150,7 @@ class FForma:
         #print(predt.shape)
         #print(predt)
         preds_transformed = softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
+        #print(preds_transformed)
         weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
         fforma_loss = weighted_avg_loss_func.sum()
         #print(grad)
@@ -154,17 +158,29 @@ class FForma:
 
     # Functions for training xgboost
     def _train_xgboost(self, params):
-
-        gbm_model = xgb.train(
-            params=params,
-            dtrain=self.dtrain,
-            #obj=self.error_softmax_obj,
-            num_boost_round=999,
-            #feval=self.fforma_loss,
-            evals=[(self.dvalid, 'eval'), (self.dtrain, 'train')],
-            early_stopping_rounds=99,
-            verbose_eval = False
-        )
+        
+        if self.custom_objective:
+            gbm_model = xgb.train(
+                params=params,
+                dtrain=self.dtrain,
+                obj=self.objective,
+                num_boost_round=100,
+                feval=self.loss,
+                evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
+                early_stopping_rounds=10,
+                verbose_eval = False
+            )
+        else:
+            gbm_model = xgb.train(
+                params=params,
+                dtrain=self.dtrain,
+                #obj=self.objective,
+                num_boost_round=100,
+                #feval=self.loss,
+                evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
+                early_stopping_rounds=10,
+                verbose_eval = False
+            )
 
         return gbm_model
 
@@ -197,15 +213,15 @@ class FForma:
         # To learn more about XGBoost parameters, head to this page:
         # https://github.com/dmlc/xgboost/blob/master/doc/parameter.md
         space = {
-            'n_estimators': hp.quniform('n_estimators', 100, 1000, 1),
+            'n_estimators': hp.quniform('n_estimators', 10, 1000, 1),
             'eta': hp.quniform('eta', 0.025, 0.5, 0.025),
             # A problem with max_depth casted to float instead of int with
             # the hp.quniform method.
             'max_depth':  hp.choice('max_depth', np.arange(1, 14, dtype=int)),
             'min_child_weight': hp.quniform('min_child_weight', 1, 6, 1),
-            'subsample': hp.quniform('subsample', 0.5, 1, 0.05),
-            'gamma': hp.quniform('gamma', 0.5, 1, 0.05),
-            'colsample_bytree': hp.quniform('colsample_bytree', 0.5, 1, 0.05)
+            'subsample': hp.quniform('subsample', 0.1, 1, 0.05),
+            'gamma': hp.quniform('gamma', 0.1, 1, 0.05),
+            'colsample_bytree': hp.quniform('colsample_bytree', 0.1, 1, 0.05)
         }
         space = {**space, **self.init_params}
         # Use the fmin function from Hyperopt to find the best hyperparameters
@@ -227,7 +243,7 @@ class FForma:
         return gbm_best_model
 
     def train(self, X_feats=None, y_best_model=None, 
-              contribution_to_error=None, n_models=None, max_evals=None, random_state=110, threads=None):
+              contribution_to_error=None, n_models=None, max_evals=None, random_state=110, threads=None, custom_objective=None):
         """
         Train xgboost with randomized
         """
@@ -242,7 +258,7 @@ class FForma:
             self.y_best_model = y_best_model
         
         if contribution_to_error is not None:
-            self.contribution_to_error = contribution_to_error.values
+            self.contribution_to_error = contribution_to_error
             
         if n_models is not None:
             self.n_models = n_models
@@ -252,16 +268,15 @@ class FForma:
         
 
         # Train-validation sets for XGBoost
-        X_train_xgb, X_val, y_train_xgb, \
-            y_val, indices_train, \
-            indices_val = train_test_split(
+        self.X_train_xgb, self.X_val, self.y_train_xgb, \
+            self.y_val, self.indices_train, \
+            self.indices_val = train_test_split(
                 self.X_feats,
                 self.y_best_model,
-                np.arange(self.X_feats.shape[0])
+                np.arange(self.X_feats.shape[0]),
+                random_state=random_state,
+                stratify = self.y_best_model.values
             )
-
-        self.dtrain = xgb.DMatrix(data=X_train_xgb, label=y_train_xgb)#indices_train)
-        self.dvalid = xgb.DMatrix(data=X_val, label=y_val)#indices_val)
 
         self.init_params = {
             'objective': 'multi:softprob',
@@ -271,10 +286,23 @@ class FForma:
             'nthread': threads,
             #'booster': 'gbtree',
             #'tree_method': 'exact',
-            'silent': 1,
+            #'silent': 1,
             'seed': random_state#,
             #'disable_default_eval_metric': 1
         }
+        
+        
+        if custom_objective:
+            self.dtrain = xgb.DMatrix(data=self.X_train_xgb, label=self.indices_train)
+            self.dvalid = xgb.DMatrix(data=self.X_val, label=self.indices_val)
+            self.objective = self.fforma_objective
+            self.loss = self.fforma_loss
+            self.init_params['disable_default_eval_metric'] = 1
+            self.custom_objective=True
+        else:
+            self.dtrain = xgb.DMatrix(data=self.X_train_xgb, label=self.y_train_xgb)
+            self.dvalid = xgb.DMatrix(data=self.X_val, label=self.y_val)
+            self.custom_objective=False
 
         self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
 
