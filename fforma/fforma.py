@@ -245,7 +245,7 @@ class FForma:
     def train(self, X_feats=None, y_best_model=None, 
               contribution_to_error=None, n_models=None, 
               max_evals=None, random_state=110, threads=None, custom_objective=None,
-              bayesian_opt=False):
+              bayesian_opt=True):
         """
         Train xgboost with randomized
         """
