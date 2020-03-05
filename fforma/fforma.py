@@ -42,7 +42,7 @@ class FForma:
         self.ts_val_list = [df['y'].values for idx, df in y_val_df.groupby('unique_id')]
 
         self.models = y_hat_val_df.columns[y_hat_val_df.columns.str.contains('y_')]
-        
+
         assert len(self.models) > 1, 'FFORMA ensambles more than one model'
 
         self.ts_hat_val_list = [[df[col].values for col in self.models] for idx, df in y_hat_val_df.groupby('unique_id')]
@@ -379,22 +379,22 @@ class FForma:
 
 
     def predict(self, y_hat_df, y_train_df=None):
-        """ 
+        """
         Parameters
         ----------
         y_hat_df: pandas df
             panel with columns unique_id, ds, y_{model} for each model to ensemble
         max_evals: int
         """
-        
+
         y_hat_r = y_hat_df.filter(items=['unique_id', 'ds'])
         y_hat_r['y_hat'] = None
-        
+
         ts_hat_list = [np.array([df[col].values for col in self.models]) for idx, df in y_hat_df.groupby('unique_id')]
 
         if y_train_df is None:
             ensemble = self._ensemble(ts_hat_list, self.opt_weights)
-            
+
         else:
             ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
 
@@ -403,13 +403,13 @@ class FForma:
             weights = self.xgb.predict(xgb.DMatrix(X_feats))
 
             ensemble = self._ensemble(ts_hat_list, weights)
-            
+
         unique_ids = y_hat_df['unique_id'].unique()
-        
+
         for idx, u_id in enumerate(unique_ids):
-            y_hat_r.loc[y_hat_r['unique_id'] == u_id,'y_hat'] = ensemble[idx] 
-            
-        return  y_hat_r 
+            y_hat_r.loc[y_hat_r['unique_id'] == u_id,'y_hat'] = ensemble[idx]
+
+        return  y_hat_r
 
 
     def _ensemble(self, ts_hat_list, weights):
