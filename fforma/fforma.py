@@ -17,7 +17,7 @@ from tsfeatures import tsfeatures
 
 
 class FForma:
-    def __init__(self, y_train_df=None, y_val_df=None, y_hat_val_df=None, frcy=None, max_evals=100):
+    def __init__(self, y_train_df=None, y_val_df=None, y_hat_val_df=None, frcy=None, obj='owa', max_evals=100):
         """ Feature-based Forecast Model Averaging.
 
         Python Implementation of FFORMA.
@@ -50,7 +50,7 @@ class FForma:
 
         print('Setting model')
         self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
-            self.ts_list, self.ts_val_list, self.ts_hat_val_list, self.frcy
+            self.ts_list, self.ts_val_list, self.ts_hat_val_list, self.frcy, obj=obj
         )
 
         self.n_models = len(self.models)
@@ -59,22 +59,29 @@ class FForma:
 
         self.dict_obj = {'fforma': self.fforma_objective, 'softmax': self.softmax_objective}
 
-    def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy):
+    def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy, obj='owa'):
         '''
 
         Returns tsfeatures of ts, best model for each time series
         and contribution to owa
         '''
         #n_models =
-        print('Computing contribution to owa')
-        contribution_to_owa = self.contribution_to_owa(
-            ts_list, ts_val_list, ts_hat_val_list, frcy
-        )
-        best_models = contribution_to_owa.argmin(axis=1)
+        if obj == 'owa':
+            print('Computing contribution to owa')
+            contribution_to_error = self.contribution_to_owa(
+                ts_list, ts_val_list, ts_hat_val_list, frcy
+            )
+        elif obj=='rmsse':
+            print('Computing contribution to rmsse')
+            contribution_to_error = self.contribution_to_rmsse(
+                ts_list, ts_val_list, ts_hat_val_list
+            )
+            
+        best_models = contribution_to_error.argmin(axis=1)
         print('Computing features')
         ts_features = tsfeatures(ts_list, frcy=frcy)
 
-        return ts_features, best_models, contribution_to_owa
+        return ts_features, best_models, contribution_to_error
 
     def contribution_to_owa(self, ts_list, ts_val_list, ts_hat_val_list, frcy):
         print('Training NAIVE2')
@@ -118,6 +125,20 @@ class FForma:
         contribution_to_owa = contribution_to_owa/2
 
         return contribution_to_owa
+    
+    def contribution_to_rmsse(self, ts_list, ts_val_list, ts_hat_val_list):
+
+        print('Calculating errors')
+        # Smape
+        rmsse_errors = np.array([
+            np.array(
+                [self.rmsse(ts, ts_val, pred) for pred in ts_hat_val]
+            ) for ts, ts_val, ts_hat_val \
+            in tqdm.tqdm(zip(ts_list, ts_val_list, ts_hat_val_list))
+        ])
+
+        
+        return rmsse_errors
 
     # Eval functions
     def smape(self, ts, ts_hat):
@@ -137,6 +158,16 @@ class FForma:
         den = diff_train[frcy:].mean() + 1e-5 #
 
         return np.abs(ts_test - ts_hat).mean()/den
+    
+    def rmsse(self, ts_train, ts_test, ts_hat):
+        # Needed condition
+        assert ts_test.shape == ts_hat.shape, "ts must have the same size of ts_hat"
+
+        rolled_train = np.roll(ts_train, 1)
+        diff_train = np.abs(ts_train - rolled_train)
+        den = diff_train[1:].mean() #
+
+        return np.sqrt(((ts_test - ts_hat)**2).mean()/den)
 
      # Objective function for xgb
     def fforma_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
