@@ -134,7 +134,7 @@ class FForma:
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
         hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
         #print(grad)
-        return grad.reshape(-1, 1), hess.reshape(-1, 1)
+        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
 
     def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
         '''
