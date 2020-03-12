@@ -37,23 +37,23 @@ class FForma:
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
+        if y_train_df is not None:
+            self.ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
+            self.ts_val_list = [df['y'].values for idx, df in y_val_df.groupby('unique_id')]
 
-        self.ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
-        self.ts_val_list = [df['y'].values for idx, df in y_val_df.groupby('unique_id')]
+            self.models = y_hat_val_df.columns[y_hat_val_df.columns.str.contains('y_')]
 
-        self.models = y_hat_val_df.columns[y_hat_val_df.columns.str.contains('y_')]
+            assert len(self.models) > 1, 'FFORMA ensambles more than one model'
 
-        assert len(self.models) > 1, 'FFORMA ensambles more than one model'
+            self.ts_hat_val_list = [[df[col].values for col in self.models] for idx, df in y_hat_val_df.groupby('unique_id')]
+            self.frcy = frcy
 
-        self.ts_hat_val_list = [[df[col].values for col in self.models] for idx, df in y_hat_val_df.groupby('unique_id')]
-        self.frcy = frcy
+            print('Setting model')
+            self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
+                self.ts_list, self.ts_val_list, self.ts_hat_val_list, self.frcy, obj=obj
+            )
 
-        print('Setting model')
-        self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
-            self.ts_list, self.ts_val_list, self.ts_hat_val_list, self.frcy, obj=obj
-        )
-
-        self.n_models = len(self.models)
+            self.n_models = len(self.models)
 
         self.max_evals = max_evals
 
@@ -192,7 +192,7 @@ class FForma:
         #hess = self.contribution_to_error[y, :]
         #print(grad)
         #print(hess)
-        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(grad)
+        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
 
     def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
         '''
@@ -238,22 +238,22 @@ class FForma:
                 params=params,
                 dtrain=self.dtrain,
                 obj=self.objective,
-                num_boost_round=100,
+                num_boost_round=self.num_boost_round,
                 feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
-                early_stopping_rounds=10,
-                verbose_eval = True
+                early_stopping_rounds=self.early_stopping_rounds,
+                verbose_eval = self.verbose_eval
             )
         else:
             gbm_model = xgb.train(
                 params=params,
                 dtrain=self.dtrain,
                 #obj=self.softmaxobj,
-                num_boost_round=100,
+                num_boost_round=self.num_boost_round,
                 #feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
-                early_stopping_rounds=10,
-                verbose_eval = True
+                early_stopping_rounds=self.early_stopping_rounds,
+                verbose_eval = self.verbose_eval
             )
 
         return gbm_model
@@ -318,8 +318,9 @@ class FForma:
 
     def train(self, X_feats=None, y_best_model=None,
               contribution_to_error=None, n_models=None,
-              max_evals=None, random_state=110, threads=None, custom_objective=None,
-              bayesian_opt=False, xgb_params=None):
+              max_evals=None, random_state=110, threads=None, custom_objective='fforma',
+              bayesian_opt=False, xgb_params=None, verbose_eval=True, num_boost_round=100,
+              early_stopping_rounds=10):
         """
         Train xgboost with randomized
         """
@@ -341,6 +342,10 @@ class FForma:
 
         if max_evals is not None:
             self.max_evals = max_evals
+        
+        self.verbose_eval = verbose_eval
+        self.num_boost_round = num_boost_round
+        self.early_stopping_rounds = early_stopping_rounds 
 
 
         # Train-validation sets for XGBoost
@@ -393,10 +398,11 @@ class FForma:
             else:
                 params = {
                     'n_estimators': 94,
-                    'eta': 0.01,
-                    'max_depth': 14,
-                    'subsample': 0.92,
-                    'colsample_bytree': 0.77
+                    'eta': 0.52,
+                    'max_depth': 40,
+                    'subsample': 0.9,
+                    'colsample_bytree': 0.77,
+                    'lambda': 1
                 }
                 params = {**params, **self.init_params}
 
