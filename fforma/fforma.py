@@ -232,13 +232,16 @@ class FForma:
 
     # Functions for training xgboost
     def _train_xgboost(self, params):
-
+        
+        num_round = int(params['n_estimators'])
+        del params['n_estimators']
+        
         if self.custom_objective:
             gbm_model = xgb.train(
                 params=params,
                 dtrain=self.dtrain,
                 obj=self.objective,
-                num_boost_round=self.num_boost_round,
+                num_boost_round=num_round,
                 feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
                 early_stopping_rounds=self.early_stopping_rounds,
@@ -249,7 +252,7 @@ class FForma:
                 params=params,
                 dtrain=self.dtrain,
                 #obj=self.softmaxobj,
-                num_boost_round=self.num_boost_round,
+                num_boost_round=num_round,
                 #feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
                 early_stopping_rounds=self.early_stopping_rounds,
@@ -279,7 +282,7 @@ class FForma:
 
         return return_dict
 
-    def _optimize_xgb(self, threads, random_state, max_evals):
+    def _optimize_xgb(self, threads, random_state, trials, max_evals):
         """
         This is the optimization function that given a space (space here) of
         hyperparameters and a scoring function (score here), finds the best hyperparameters.
@@ -287,27 +290,28 @@ class FForma:
         # To learn more about XGBoost parameters, head to this page:
         # https://github.com/dmlc/xgboost/blob/master/doc/parameter.md
         space = {
-            'n_estimators': hp.quniform('n_estimators', 1, 250, 1),
-            'eta': hp.quniform('eta', 0.001, 1, 0.05),
+            'n_estimators': hp.quniform('n_estimators', 50, 100, 1),
+            'eta': hp.quniform('eta', 0.025, 0.5, 0.025),
             # A problem with max_depth casted to float instead of int with
             # the hp.quniform method.
-            'max_depth':  hp.choice('max_depth', np.arange(6, 15, dtype=int)),
+            'max_depth':  hp.choice('max_depth', np.arange(30, 100, dtype=int)),
             #'min_child_weight': hp.quniform('min_child_weight', 1, 6, 1),
             'subsample': hp.quniform('subsample', 0.5, 1, 0.1),
-            #'gamma': hp.quniform('gamma', 0.1, 1, 0.05),
+            'gamma': hp.quniform('gamma', 0.5, 1, 0.05),
+            'lambda': hp.quniform('lambda', 0.1, 1, 0.05),
             'colsample_bytree': hp.quniform('colsample_bytree', 0.5, 1, 0.05)
         }
         space = {**space, **self.init_params}
         # Use the fmin function from Hyperopt to find the best hyperparameters
         best = fmin(self._score, space, algo=tpe.suggest,
-                    # trials=trials,
+                    trials=trials,
                     max_evals=max_evals)
         return best
 
-    def _wrapper_best_xgb(self, threads, random_state, max_evals):
+    def _wrapper_best_xgb(self, threads, random_state, trials, max_evals):
 
         # Optimizing xgbost
-        best_hyperparameters = self._optimize_xgb(threads, random_state, max_evals)
+        best_hyperparameters = self._optimize_xgb(threads, random_state, trials, max_evals)
 
         best_hyperparameters = {**best_hyperparameters, **self.init_params}
 
@@ -390,7 +394,8 @@ class FForma:
             self.custom_objective=False
 
         if bayesian_opt:
-            self.xgb = self._wrapper_best_xgb(threads, random_state, self.max_evals)
+            self.trials = Trials()
+            self.xgb = self._wrapper_best_xgb(threads, random_state, self.trials, self.max_evals)
         else:
             # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
             if xgb_params:
