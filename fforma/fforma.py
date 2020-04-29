@@ -16,6 +16,8 @@ from fforma.benchmarks import *
 from tsfeatures import tsfeatures
 
 
+
+
 class FForma:
     def __init__(self, y_train_df=None, y_val_df=None, y_hat_val_df=None, frcy=None, obj='owa', max_evals=100):
         """ Feature-based Forecast Model Averaging.
@@ -76,7 +78,7 @@ class FForma:
             contribution_to_error = self.contribution_to_rmsse(
                 ts_list, ts_val_list, ts_hat_val_list
             )
-            
+
         best_models = contribution_to_error.argmin(axis=1)
         print('Computing features')
         ts_features = tsfeatures(ts_list, frcy=frcy)
@@ -125,7 +127,7 @@ class FForma:
         contribution_to_owa = contribution_to_owa/2
 
         return contribution_to_owa
-    
+
     def contribution_to_rmsse(self, ts_list, ts_val_list, ts_hat_val_list):
 
         print('Calculating errors')
@@ -137,7 +139,7 @@ class FForma:
             in tqdm.tqdm(zip(ts_list, ts_val_list, ts_hat_val_list))
         ])
 
-        
+
         return rmsse_errors
 
     # Eval functions
@@ -158,7 +160,7 @@ class FForma:
         den = diff_train[frcy:].mean() + 1e-5 #
 
         return np.abs(ts_test - ts_hat).mean()/den
-    
+
     def rmsse(self, ts_train, ts_test, ts_hat):
         # Needed condition
         assert ts_test.shape == ts_hat.shape, "ts must have the same size of ts_hat"
@@ -231,10 +233,10 @@ class FForma:
 
     # Functions for training xgboost
     def _train_xgboost(self, params):
-        
+
         num_round = int(params['n_estimators'])
         del params['n_estimators']
-        
+
         if self.custom_objective:
             gbm_model = xgb.train(
                 params=params,
@@ -319,9 +321,7 @@ class FForma:
 
         return gbm_best_model
 
-    def train(self, X_feats=None, y_best_model=None,
-              contribution_to_error=None, n_models=None,
-              max_evals=None, random_state=110, threads=None, custom_objective='fforma',
+    def train(self, errors, X_feats=None, y=None, freq=None, base_model=None, random_state=110, threads=None, custom_objective='fforma',
               bayesian_opt=False, xgb_params=None, verbose_eval=True, num_boost_round=100,
               early_stopping_rounds=10):
         """
@@ -331,24 +331,28 @@ class FForma:
         if threads is None:
             threads = mp.cpu_count() - 1
 
-        if X_feats is not None:
+        self.freq = freq
+
+        # Construir lista de series
+        if X_feats is None:
+            ts_list = [serie.values for _, serie in y.groupby('unique_id')]
+
+            # Entenar xgboost
+            print('Calculating featureas')
+            self.X_feats = tsfeatures(ts_list, self.freq, parallel=False)
+        else:
             self.X_feats = X_feats
 
-        if y_best_model is not None:
-            self.y_best_model = y_best_model
+        print('Preparing training phase')
+        self.contribution_to_error = errors.values
+        self.y_best_model = self.contribution_to_error.argmin(axis=1)
 
-        if contribution_to_error is not None:
-            self.contribution_to_error = contribution_to_error
+        #if max_evals is not None:
+        #    self.max_evals = max_evals
 
-        if n_models is not None:
-            self.n_models = n_models
-
-        if max_evals is not None:
-            self.max_evals = max_evals
-        
         self.verbose_eval = verbose_eval
         self.num_boost_round = num_boost_round
-        self.early_stopping_rounds = early_stopping_rounds 
+        self.early_stopping_rounds = early_stopping_rounds
 
 
         # Train-validation sets for XGBoost
@@ -366,7 +370,7 @@ class FForma:
             'objective': 'multi:softprob',
             # Increase this number if you have more cores. Otherwise, remove it and it will default
             # to the maxium number.
-            'num_class': self.n_models,
+            'num_class': errors.shape[1],
             'nthread': threads,
             #'booster': 'gbtree',
             #'tree_method': 'exact',
@@ -413,13 +417,17 @@ class FForma:
 
             self.xgb = self._train_xgboost(params)
 
-        self.opt_weights = self.xgb.predict(xgb.DMatrix(self.X_feats))#, output_margin = True)
-        #self.opt_weights = softmax(self.opt_weights, axis=1)
+        self.error_columns = errors.columns
+
+        weights = self.xgb.predict(xgb.DMatrix(self.X_feats))
+        self.weights_ = pd.DataFrame(weights,
+                                     index=errors.index,
+                                     columns=errors.columns)
 
         return self
 
 
-    def predict(self, y_hat_df, y_train_df=None):
+    def predict(self, y_hat_df, X_feats=None):
         """
         Parameters
         ----------
@@ -428,29 +436,41 @@ class FForma:
         max_evals: int
         """
 
-        y_hat_r = y_hat_df.filter(items=['unique_id', 'ds'])
-        y_hat_r['y_hat'] = None
-
-        ts_hat_list = [np.array([df[col].values for col in self.models]) for idx, df in y_hat_df.groupby('unique_id')]
-
-        if y_train_df is None:
-            ensemble = self._ensemble(ts_hat_list, self.opt_weights)
-
-        else:
-            ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
-
-            X_feats = tsfeatures(ts_list, frcy=self.frcy)
-
+        # y_hat_r = y_hat_df.filter(items=['unique_id', 'ds'])
+        # y_hat_r['y_hat'] = None
+        #
+        # ts_hat_list = [np.array([df[col].values for col in self.models]) for idx, df in y_hat_df.groupby('unique_id')]
+        #
+        # if y_train_df is None:
+        #     ensemble = self._ensemble(ts_hat_list, self.opt_weights)
+        #
+        # else:
+        #     ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
+        #
+        #     X_feats = tsfeatures(ts_list, frcy=self.frcy)
+        #
+        #     weights = self.xgb.predict(xgb.DMatrix(X_feats))
+        #
+        #     ensemble = self._ensemble(ts_hat_list, weights)
+        #
+        # unique_ids = y_hat_df['unique_id'].unique()
+        #
+        # for idx, u_id in enumerate(unique_ids):
+        #     y_hat_r.loc[y_hat_r['unique_id'] == u_id,'y_hat'] = ensemble[idx]
+        #
+        # return  y_hat_r
+        if X_feats is not None:
             weights = self.xgb.predict(xgb.DMatrix(X_feats))
+            weights = pd.DataFrame(weights, index=X_feats.index,
+                                   columns=self.error_columns)
+        else:
+            weights = self.weights_
 
-            ensemble = self._ensemble(ts_hat_list, weights)
-
-        unique_ids = y_hat_df['unique_id'].unique()
-
-        for idx, u_id in enumerate(unique_ids):
-            y_hat_r.loc[y_hat_r['unique_id'] == u_id,'y_hat'] = ensemble[idx]
-
-        return  y_hat_r
+        fforma_preds = weights * y_hat_df
+        fforma_preds = fforma_preds.sum(axis=1)
+        fforma_preds.name = 'fforma_prediction'
+        preds = pd.concat([y_hat_df, fforma_preds], axis=1)
+        return preds
 
 
     def _ensemble(self, ts_hat_list, weights):
