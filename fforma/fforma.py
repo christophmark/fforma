@@ -19,47 +19,46 @@ from tsfeatures import tsfeatures
 
 
 class FForma:
-    def __init__(self, y_train_df=None, y_val_df=None, y_hat_val_df=None, frcy=None, obj='owa', max_evals=100):
+    def __init__(self, obj='owa',
+                 max_evals=100, verbose_eval=True,
+                 num_boost_round=100, early_stopping_rounds=10,
+                 xgb_params=None,
+                 bayesian_opt=False,
+                 custom_objective='fforma',
+                 threads=None, seed=None):
         """ Feature-based Forecast Model Averaging.
 
         Python Implementation of FFORMA.
 
         Parameters
         ----------
-        y_train_df: pandas df
-            panel with columns unique_id, ds, y
-        y_val_df: pandas df
-            panel with columns unique_id, ds, y
-        y_hat_val_df: pandas df
-            panel with columns unique_id, ds, y_{model} for each model to ensemble
-        frcy: int
-            frequency of time series
-        max_evals: int
+        xgb_params:
+            Parameters for the xgboost
+        obj: str
+            Type of error to calculate
         -----
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
-        if y_train_df is not None:
-            self.ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
-            self.ts_val_list = [df['y'].values for idx, df in y_val_df.groupby('unique_id')]
-
-            self.models = y_hat_val_df.columns[y_hat_val_df.columns.str.contains('y_')]
-
-            assert len(self.models) > 1, 'FFORMA ensambles more than one model'
-
-            self.ts_hat_val_list = [[df[col].values for col in self.models] for idx, df in y_hat_val_df.groupby('unique_id')]
-            self.frcy = frcy
-
-            print('Setting model')
-            self.X_feats, self.y_best_model, self.contribution_to_error = self._prepare_to_train(
-                self.ts_list, self.ts_val_list, self.ts_hat_val_list, self.frcy, obj=obj
-            )
-
-            self.n_models = len(self.models)
-
         self.max_evals = max_evals
 
         self.dict_obj = {'fforma': self.fforma_objective, 'softmax': self.softmax_objective}
+
+        self.verbose_eval = verbose_eval
+        self.num_boost_round = num_boost_round
+        self.early_stopping_rounds = early_stopping_rounds
+
+        self.xgb_params = xgb_params
+        self.bayesian_opt = bayesian_opt
+
+        self.custom_objective = custom_objective
+
+        # nthreads params
+        if threads is None:
+            self.threads = mp.cpu_count() - 1
+
+        if seed is None:
+            self.seed = 260294
 
     def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy, obj='owa'):
         '''
@@ -321,73 +320,84 @@ class FForma:
 
         return gbm_best_model
 
-    def train(self, errors, X_feats=None, y=None, freq=None, base_model=None, random_state=110, threads=None, custom_objective='fforma',
-              bayesian_opt=False, xgb_params=None, verbose_eval=True, num_boost_round=100,
-              early_stopping_rounds=10):
-        """
-        Train xgboost with randomized
-        """
-        # nthreads params
-        if threads is None:
-            threads = mp.cpu_count() - 1
+    def _tsfeatures(self, y_train_df, y_val_df, freq):
+        #TODO receive panel of freq
+        complete_data = pd.concat([y_train_df, y_test_df.filter(items=['unique_id', 'ds', 'y'])])
+        holdout_feats = tsfeatures(y_train_df)
+        feats = tsfeatures(complete_data)
 
-        self.freq = freq
+        return feats, holdout_feats
+
+
+    def fit(self, y_train_df=None, y_val_df=None,
+            val_periods=None,
+            errors=None, holdout_feats=None,
+            feats=None,
+            freq=None, base_model=None):
+        """
+        y_train_df: pandas df
+            panel with columns unique_id, ds, y
+        y_val_df: pandas df
+            panel with columns unique_id, ds, y, {model} for each model to ensemble
+        val_periods: int or pandas df
+            int: number of val periods
+            pandas df: panel with columns unique_id, val_periods
+        """
+
+
+        if (errors is None) and (feats is None):
+            assert (y_train_df is not None) and (y_val_df is not None), "you must provide a y_train_df and y_val_df"
+
+
 
         # Construir lista de series
-        if X_feats is None:
-            ts_list = [serie.values for _, serie in y.groupby('unique_id')]
-
-            # Entenar xgboost
-            print('Calculating featureas')
-            self.X_feats = tsfeatures(ts_list, self.freq, parallel=False)
+        if feats is None:
+            self.feats_, self.holdout_feats_ = self._tsfeatures(y_train_df, y_val_df, freq)
         else:
-            self.X_feats = X_feats
+            assert holdout_feats is not None, "when passing feats you must provide holdout feats"
+            self.feats_, self.holdout_feats_ = feats, holdout_feats
 
-        print('Preparing training phase')
-        self.contribution_to_error = errors.values
-        self.y_best_model = self.contribution_to_error.argmin(axis=1)
-
-        #if max_evals is not None:
-        #    self.max_evals = max_evals
-
-        self.verbose_eval = verbose_eval
-        self.num_boost_round = num_boost_round
-        self.early_stopping_rounds = early_stopping_rounds
+        if errors is None:
+            pass
+            #calculate contribution_to_error(y_train_df, y_val_df)
+        else:
+            selfl.contribution_to_error = errors.values
+            self.best_models_ = self.contribution_to_error.argmin(axis=1)
 
 
         # Train-validation sets for XGBoost
-        self.X_train_xgb, self.X_val, self.y_train_xgb, \
-            self.y_val, self.indices_train, \
-            self.indices_val = train_test_split(
-                self.X_feats,
-                self.y_best_model,
-                np.arange(self.X_feats.shape[0]),
-                random_state=random_state,
-                stratify = self.y_best_model#.values
-            )
+        self.holdout_feats_train_, self.holdout_feats_val_, \
+            self.best_models_train_, \
+            self.best_models_val_, \
+            self.indices_train_, \
+            self.indices_val_ = train_test_split(self.holdout_feats_,
+                                                 self.best_models_,
+                                                 np.arange(self.holdout_feats_.shape[0]),
+                                                 random_state=self.seed,
+                                                 stratify = self.best_models_)
 
         self.init_params = {
             'objective': 'multi:softprob',
             # Increase this number if you have more cores. Otherwise, remove it and it will default
             # to the maxium number.
-            'num_class': errors.shape[1],
-            'nthread': threads,
+            'num_class': self.contribution_to_error.shape[1],
+            'nthread': self.threads,
             #'booster': 'gbtree',
             #'tree_method': 'exact',
             'silent': 1,
-            'seed': random_state#,
+            'seed': self.seed#,
             #'disable_default_eval_metric': 1
         }
 
 
-        if custom_objective:
-            if custom_objective=='fforma':
-                self.dtrain = xgb.DMatrix(data=self.X_train_xgb, label=self.indices_train)
-                self.dvalid = xgb.DMatrix(data=self.X_val, label=self.indices_val)
-            elif custom_objective=='softmax':
+        if self.custom_objective:
+            if self.custom_objective=='fforma':
+                self.dtrain = xgb.DMatrix(data=self.holdout_feats_train_, label=self.indices_train_)
+                self.dvalid = xgb.DMatrix(data=self.holdout_feats_val_, label=self.indices_val_)
+            elif self.custom_objective=='softmax':
                 self.dtrain = xgb.DMatrix(data=self.X_train_xgb, label=self.y_train_xgb)
                 self.dvalid = xgb.DMatrix(data=self.X_val, label=self.y_val)
-            self.objective = self.dict_obj[custom_objective]
+            self.objective = self.dict_obj[self.custom_objective]
             self.loss = self.fforma_loss
             self.init_params['disable_default_eval_metric'] = 1
             self.custom_objective=True
@@ -396,16 +406,16 @@ class FForma:
             self.dvalid = xgb.DMatrix(data=self.X_val, label=self.y_val)
             self.custom_objective=False
 
-        if bayesian_opt:
+        if self.bayesian_opt:
             self.trials = Trials()
             self.xgb = self._wrapper_best_xgb(threads, random_state, self.trials, self.max_evals)
         else:
             # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
-            if xgb_params:
-                params = {**xgb_params, **self.init_params}
+            if self.xgb_params:
+                params = {**self.xgb_params, **self.init_params}
             else:
                 params = {
-                    'n_estimators': 94,
+                    'n_estimators': 50,
                     'eta': 0.52,
                     'max_depth': 40,
                     'subsample': 0.9,
@@ -419,65 +429,24 @@ class FForma:
 
         self.error_columns = errors.columns
 
-        weights = self.xgb.predict(xgb.DMatrix(self.X_feats))
+        weights = self.xgb.predict(xgb.DMatrix(self.feats_))
         self.weights_ = pd.DataFrame(weights,
-                                     index=errors.index,
+                                     index=self.feats_.index,
                                      columns=errors.columns)
 
         return self
 
 
-    def predict(self, y_hat_df, X_feats=None):
+    def predict(self, y_hat_df):
         """
         Parameters
         ----------
         y_hat_df: pandas df
-            panel with columns unique_id, ds, y_{model} for each model to ensemble
-        max_evals: int
+            panel with columns unique_id, ds, {model} for each model to ensemble
         """
-
-        # y_hat_r = y_hat_df.filter(items=['unique_id', 'ds'])
-        # y_hat_r['y_hat'] = None
-        #
-        # ts_hat_list = [np.array([df[col].values for col in self.models]) for idx, df in y_hat_df.groupby('unique_id')]
-        #
-        # if y_train_df is None:
-        #     ensemble = self._ensemble(ts_hat_list, self.opt_weights)
-        #
-        # else:
-        #     ts_list = [df['y'].values for idx, df in y_train_df.groupby('unique_id')]
-        #
-        #     X_feats = tsfeatures(ts_list, frcy=self.frcy)
-        #
-        #     weights = self.xgb.predict(xgb.DMatrix(X_feats))
-        #
-        #     ensemble = self._ensemble(ts_hat_list, weights)
-        #
-        # unique_ids = y_hat_df['unique_id'].unique()
-        #
-        # for idx, u_id in enumerate(unique_ids):
-        #     y_hat_r.loc[y_hat_r['unique_id'] == u_id,'y_hat'] = ensemble[idx]
-        #
-        # return  y_hat_r
-        if X_feats is not None:
-            weights = self.xgb.predict(xgb.DMatrix(X_feats))
-            weights = pd.DataFrame(weights, index=X_feats.index,
-                                   columns=self.error_columns)
-        else:
-            weights = self.weights_
-
-        fforma_preds = weights * y_hat_df
+        fforma_preds = self.weights_ * y_hat_df
         fforma_preds = fforma_preds.sum(axis=1)
         fforma_preds.name = 'fforma_prediction'
         preds = pd.concat([y_hat_df, fforma_preds], axis=1)
+
         return preds
-
-
-    def _ensemble(self, ts_hat_list, weights):
-        """
-        For each series in ts_list returns predictions
-        ts_predict: list of series to predict
-        """
-        final_preds = np.array([np.matmul(pred.T, opt_weight) for pred, opt_weight in zip(ts_hat_list, weights)])
-
-        return final_preds
