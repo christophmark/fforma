@@ -6,19 +6,17 @@ from tsfeatures import tsfeatures
 
 class FForma:
 
-    def __init__(self, freq, ts_parallel=True):
-        self.freq = freq
-        self.ts_parallel = ts_parallel
+    def __init__(self):
+        pass
 
-    def fit(self, errors, y):
+    def fit(self, errors, y, ts_feats):
         # Construir lista de series
         ts_list = [serie.values for _, serie in y.groupby('unique_id')]
 
         # Entenar xgboost
-        xgb_X = tsfeatures(ts_list, self.freq, parallel=self.ts_parallel) 
         xgb_y = errors.values.argmin(axis=1)
 
-        X_train, X_valid, y_train, y_valid = train_test_split(xgb_X, xgb_y, 
+        X_train, X_valid, y_train, y_valid = train_test_split(ts_feats, xgb_y,
                                                               stratify=xgb_y)
         params = {
                 'objective': 'multi:softprob',
@@ -35,7 +33,7 @@ class FForma:
                               evals=[(dtrain, 'train'), (dvalid, 'eval')])
 
         # Obtener pesos para el ensamble
-        weights = xgb_model.predict(xgb.DMatrix(xgb_X))
+        weights = xgb_model.predict(xgb.DMatrix(ts_feats))
         self.weights_ = pd.DataFrame(weights, 
                                      index=errors.index,
                                      columns=errors.columns)
@@ -46,7 +44,7 @@ class FForma:
         # Ponderar con los pesos obtenidos
         fforma_preds = self.weights_ * base_preds
         fforma_preds = fforma_preds.sum(axis=1)
-        fforma_preds.name = 'fforma_prediction'
+        fforma_preds.name = 'FformaClassificationEnsemble'
         preds = pd.concat([base_preds, fforma_preds], axis=1)
         return preds
 
