@@ -15,10 +15,10 @@ import numpy as np
 from fforma.benchmarks import *
 from tsfeatures import tsfeatures
 
+from fforma.utils_input import CheckInput
 
 
-
-class FForma:
+class FForma(CheckInput):
     def __init__(self, obj='owa',
                  max_evals=100, verbose_eval=True,
                  num_boost_round=100, early_stopping_rounds=10,
@@ -59,6 +59,8 @@ class FForma:
 
         if seed is None:
             self.seed = 260294
+        else:
+            self.seed = seed
 
     def _prepare_to_train(self, ts_list, ts_val_list, ts_hat_val_list, frcy, obj='owa'):
         '''
@@ -204,10 +206,187 @@ class FForma:
         #print(predt)
         preds_transformed = predt#softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
         #print(preds_transformed)
-        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
-        fforma_loss = weighted_avg_loss_func.sum()/n_train
+        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1)#.reshape((n_train, 1))
+        fforma_loss = weighted_avg_loss_func.mean()#sum()/n_train
         #print(grad)
         return 'FFORMA-loss', fforma_loss
+
+    def mse_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
+        '''
+        Compute...
+        '''
+        #y = dtrain.get_label().astype(int)
+        #y_index = self.indices[y]
+        #print(y_index)
+        #y_val_to_ensemble = self.y_val_to_ensemble.loc[y_index]
+        #y_val = self.y_val.loc[y_index]
+        #print(predt)
+        #print(predt.sum(axis=1))
+        #print(dtrain.get_base_margin())#.reshape(750, 4))
+        preds_transformed = pd.DataFrame(predt, index=self.index_train,
+                                         columns=self.y_val_to_ensemble_train.columns)
+
+        #print(preds_transformed)
+
+        y_val_pred = (preds_transformed*self.y_val_to_ensemble_train).sum(axis=1)
+        grad = (self.y_val_train.sub(y_val_pred, axis=0))
+        mse = grad.pow(2).mean()
+        #print(grad)
+        #print(y_val_to_ensemble)
+        grad = (-self.y_val_to_ensemble_train).mul(grad, axis=0)
+        grad = grad.groupby(self.index_y_train).mean()
+        grad = grad.div(mse, axis=0)
+        #print(grad)
+        #grad = grad.mul(self.loss_weights_train, axis=0).values
+        #print(grad)
+
+        hess = self.y_val_to_ensemble_train.pow(2)
+        hess = hess.groupby(self.index_y_train).mean()
+        hess = grad + hess
+        hess = hess.div(mse, axis=0)
+
+        grad = grad.values
+        hess = hess.values
+        #hess = hess.mul(self.loss_weights_train, axis=0).values
+        #print(hess)
+
+        #print(grad)
+        #print(hess)
+
+        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
+
+    def mse_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
+        '''
+        Compute...
+        '''
+        #print(predt.sum(axis=1).mean())
+        y = dtrain.get_label().astype(int)
+        y_index = self.indices[y]
+        y_val_to_ensemble = self.y_val_to_ensemble.loc[y_index]
+        y_val = self.y_val.loc[y_index]
+        preds_transformed = pd.DataFrame(predt, index=self.holdout_feats_.loc[y_index].index,
+                                         columns=y_val_to_ensemble.columns)
+
+        y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
+        mse = y_val.sub(y_val_pred, axis=0).pow(2)
+
+        #print(mse)
+        mse = mse.groupby(mse.index.get_level_values('unique_id')).mean()
+        #print(mse)
+        mse = 0.5*np.log(mse) - 0.5*np.log(self.loss_weights.loc[y_index])#mse.mul(self.loss_weights.loc[y_index]).pow(1/2)
+        #print(mse.shape)
+        mse = mse.values.sum()
+
+        return 'MSE-loss', mse
+
+    def _fit_mse(self, y_train_df=None, y_val_df=None,
+                 val_periods=None,
+                 errors=None, holdout_feats=None,
+                 feats=None, weights=None,
+                 freq=None, base_model=None,
+                 sorted_data=False):
+        """
+        y_train_df: pandas df
+            panel with columns unique_id, ds, y
+        y_val_df: pandas df
+            panel with columns unique_id, ds, y, {model} for each model to ensemble
+        val_periods: int or pandas df
+            int: number of val periods
+            pandas df: panel with columns unique_id, val_periods
+        """
+        # for now y_val_df must be indexed
+        self.y_val_to_ensemble = y_val_df.drop(columns='y')
+        self.y_val = y_val_df['y']
+        # Train-validation sets for XGBoost
+        self.loss_weights = weights
+        self.contribution_to_error = errors.mul(self.loss_weights, axis=0)
+        self.best_models_ = self.contribution_to_error.values.argmin(axis=1)
+        self.feats_, self.holdout_feats_ = feats, holdout_feats
+
+        self.holdout_feats_train_, self.holdout_feats_val_, \
+            self.best_models_train_, \
+            self.best_models_val_, \
+            self.indices_train_int, \
+            self.indices_val_int = train_test_split(self.holdout_feats_,
+                                                     self.best_models_,
+                                                     np.arange(self.holdout_feats_.shape[0]),
+                                                     random_state=self.seed,
+                                                     stratify = self.best_models_)
+
+        self.indices = self.holdout_feats_.index.get_level_values('unique_id')
+        self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
+        self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
+
+        self.y_val_to_ensemble_train = self.y_val_to_ensemble.loc[self.index_train]
+        self.y_val_train = self.y_val.loc[self.index_train]
+        self.loss_weights_train = self.loss_weights.loc[self.index_train]
+
+        self.index_y_train = self.y_val_to_ensemble_train.index.get_level_values('unique_id')
+
+        self.init_params = {
+            'objective': 'multi:softprob',
+            # Increase this number if you have more cores. Otherwise, remove it and it will default
+            # to the maxium number.
+            'num_class': self.contribution_to_error.shape[1],
+            'nthread': self.threads,
+            #'booster': 'gbtree',
+            #'tree_method': 'exact',
+            'silent': 1,
+            'seed': self.seed#,
+            #'disable_default_eval_metric': 1
+        }
+
+        self.dtrain = xgb.DMatrix(data=self.holdout_feats_train_, label=self.indices_train_int)
+        self.dvalid = xgb.DMatrix(data=self.holdout_feats_val_, label=self.indices_val_int)
+
+
+
+        #base_score_train = softmax(errors.loc[self.index_train], axis=1)
+        # base_margin_train = errors.loc[self.index_train]
+        # base_margin_train = (-base_margin_train).add(base_margin_train.mean(axis=1), axis=0)
+        #
+        # base_margin_val = errors.loc[self.index_val]
+        # base_margin_val = (-base_margin_val).add(base_margin_val.mean(axis=1), axis=0)
+
+
+        # self.dtrain.set_base_margin(base_margin_train.values.flatten())
+        # self.dvalid.set_base_margin(base_margin_val.values.flatten())
+
+        self.objective = self.mse_objective
+        self.loss = self.mse_loss
+        self.init_params['disable_default_eval_metric'] = 1
+        self.custom_objective=True
+
+        if self.bayesian_opt:
+            self.trials = Trials()
+            self.xgb = self._wrapper_best_xgb(self.threads, self.seed, self.trials, self.max_evals)
+        else:
+            # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
+            if self.xgb_params:
+                params = {**self.xgb_params, **self.init_params}
+            else:
+                params = {
+                    'n_estimators': 94,
+                    'eta': 0.58,
+                    'max_depth': 14,
+                    'subsample': 0.92,
+                    'colsample_bytree': 0.77#,
+                    #'lambda': 1
+                }
+                params = {**params, **self.init_params}
+
+
+            self.xgb = self._train_xgboost(params)
+
+        self.error_columns = errors.columns
+
+        weights = self.xgb.predict(xgb.DMatrix(self.feats_))
+        self.weights_ = pd.DataFrame(weights,
+                                     index=self.feats_.index,
+                                     columns=errors.columns)
+
+        return self
+
 
     def softmax_objective(self, preds, dtrain):
         """Softmax objective.
@@ -228,8 +407,6 @@ class FForma:
         # Return as 1-d vectors
         return grad.flatten(), hess.flatten()
 
-
-
     # Functions for training xgboost
     def _train_xgboost(self, params):
 
@@ -245,7 +422,8 @@ class FForma:
                 feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
                 early_stopping_rounds=self.early_stopping_rounds,
-                verbose_eval = self.verbose_eval
+                verbose_eval = self.verbose_eval,
+                maximize=False
             )
         else:
             gbm_model = xgb.train(
@@ -268,13 +446,13 @@ class FForma:
 
         predictions = gbm_model.predict(
             self.dvalid,
-            ntree_limit=gbm_model.best_iteration + 1#,
+            ntree_limit=gbm_model.best_iteration #,
             #output_margin = True
         )
 
         #print(predictions)
 
-        loss = self.fforma_loss(predictions, self.dvalid)
+        loss = self.loss(predictions, self.dvalid)
         # TODO: Add the importance for the selected features
         #print("\tLoss {0}\n\n".format(loss))
 
@@ -294,7 +472,7 @@ class FForma:
             'eta': hp.quniform('eta', 0.025, 0.5, 0.025),
             # A problem with max_depth casted to float instead of int with
             # the hp.quniform method.
-            'max_depth':  hp.choice('max_depth', np.arange(30, 100, dtype=int)),
+            'max_depth':  hp.choice('max_depth', np.arange(10, 100, dtype=int)),
             #'min_child_weight': hp.quniform('min_child_weight', 1, 6, 1),
             'subsample': hp.quniform('subsample', 0.5, 1, 0.1),
             'gamma': hp.quniform('gamma', 0.5, 1, 0.05),
@@ -328,12 +506,12 @@ class FForma:
 
         return feats, holdout_feats
 
-
     def fit(self, y_train_df=None, y_val_df=None,
             val_periods=None,
             errors=None, holdout_feats=None,
             feats=None,
-            freq=None, base_model=None):
+            freq=None, base_model=None,
+            sorted_data=False):
         """
         y_train_df: pandas df
             panel with columns unique_id, ds, y
@@ -347,22 +525,31 @@ class FForma:
 
         if (errors is None) and (feats is None):
             assert (y_train_df is not None) and (y_val_df is not None), "you must provide a y_train_df and y_val_df"
+            is_pandas_df = self._check_passed_dfs(y_train_df, y_val_df_)
 
-
-
-        # Construir lista de series
-        if feats is None:
-            self.feats_, self.holdout_feats_ = self._tsfeatures(y_train_df, y_val_df, freq)
-        else:
-            assert holdout_feats is not None, "when passing feats you must provide holdout feats"
-            self.feats_, self.holdout_feats_ = feats, holdout_feats
+            if not sorted_data:
+                if is_pandas_df:
+                    y_train_df = y_train_df.sort_values(['unique_id', 'ds'])
+                    y_val_df = y_val_df.sort_values(['unique_id', 'ds'])
+                else:
+                    y_train_df = y_train_df.sort_index()
+                    y_val_df = y_val_df.sort_index()
 
         if errors is None:
             pass
             #calculate contribution_to_error(y_train_df, y_val_df)
         else:
-            selfl.contribution_to_error = errors.values
+            self._check_valid_columns(errors, cols=['unique_id'], cols_index=['unique_id'])
+            self.contribution_to_error = errors.values
             self.best_models_ = self.contribution_to_error.argmin(axis=1)
+
+
+        if feats is None:
+            self.feats_, self.holdout_feats_ = self._tsfeatures(y_train_df, y_val_df, freq)
+        else:
+            assert holdout_feats is not None, "when passing feats you must provide holdout feats"
+            self._check_valid_columns(feats, cols=['unique_id'], cols_index=['unique_id'])
+            self.feats_, self.holdout_feats_ = feats, holdout_feats
 
 
         # Train-validation sets for XGBoost
@@ -375,6 +562,9 @@ class FForma:
                                                  np.arange(self.holdout_feats_.shape[0]),
                                                  random_state=self.seed,
                                                  stratify = self.best_models_)
+
+        self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
+        self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
 
         self.init_params = {
             'objective': 'multi:softprob',
@@ -406,21 +596,24 @@ class FForma:
             self.dvalid = xgb.DMatrix(data=self.X_val, label=self.y_val)
             self.custom_objective=False
 
+        #self.dtrain.set_base_margin(-errors.loc[self.index_train].values.flatten())
+        #self.dvalid.set_base_margin(-errors.loc[self.index_val].values.flatten())
+
         if self.bayesian_opt:
             self.trials = Trials()
-            self.xgb = self._wrapper_best_xgb(threads, random_state, self.trials, self.max_evals)
+            self.xgb = self._wrapper_best_xgb(self.threads, self.seed, self.trials, self.max_evals)
         else:
             # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
             if self.xgb_params:
                 params = {**self.xgb_params, **self.init_params}
             else:
                 params = {
-                    'n_estimators': 50,
-                    'eta': 0.52,
-                    'max_depth': 40,
-                    'subsample': 0.9,
-                    'colsample_bytree': 0.77,
-                    'lambda': 1
+                    'n_estimators': 94,
+                    'eta': 0.58,
+                    'max_depth': 14,
+                    'subsample': 0.92,
+                    'colsample_bytree': 0.77#,
+                    #'lambda': 1
                 }
                 params = {**params, **self.init_params}
 
