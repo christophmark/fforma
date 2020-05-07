@@ -17,6 +17,8 @@ from tsfeatures import tsfeatures
 
 from fforma.utils_input import CheckInput
 
+from math import isclose
+
 
 class FForma(CheckInput):
     def __init__(self, obj='owa',
@@ -172,88 +174,122 @@ class FForma(CheckInput):
 
         return np.sqrt(((ts_test - ts_hat)**2).mean()/den)
 
-     # Objective function for xgb
-    def fforma_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
+    def mse_objective_or(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
         '''
         Compute...
         '''
-        y = dtrain.get_label().astype(int)
-        #print(y)
-        n_train = len(y)
-        #print(predt.shape)
-        #print(predt)
-        preds_transformed = predt#softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
-        #https://github.com/dmlc/xgboost/blob/0ddb8a7661013c75674704872c22273415268dbd/demo/guide-python/custom_objective.py#L29-L33
-        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
-        #print(weighted_avg_loss_func.shape)
-        grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
-        #print(grad)
-        #grad = preds_transformer*self.contribution_to_error[y, :]
-        #print(grad.shape)
-        hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
-        #hess = grad*(1 - 2*preds_transformed)
-        #hess = self.contribution_to_error[y, :]
-        #print(grad)
-        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
-
-    def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
-        '''
-        Compute...
-        '''
-        y = dtrain.get_label().astype(int)
-        n_train = len(y)
-        #print(predt.shape)
-        #print(predt)
-        preds_transformed = predt#softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
-        #print(preds_transformed)
-        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1)#.reshape((n_train, 1))
-        fforma_loss = weighted_avg_loss_func.mean()#sum()/n_train
-        #print(grad)
-        return 'FFORMA-loss', fforma_loss
-
-    def mse_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
-        '''
-        Compute...
-        '''
-        #y = dtrain.get_label().astype(int)
-        #y_index = self.indices[y]
-        #print(y_index)
-        #y_val_to_ensemble = self.y_val_to_ensemble.loc[y_index]
-        #y_val = self.y_val.loc[y_index]
-        #print(predt)
-        #print(predt.sum(axis=1))
-        #print(dtrain.get_base_margin())#.reshape(750, 4))
         preds_transformed = pd.DataFrame(predt, index=self.index_train,
                                          columns=self.y_val_to_ensemble_train.columns)
 
-        #print(preds_transformed)
 
         y_val_pred = (preds_transformed*self.y_val_to_ensemble_train).sum(axis=1)
-        grad = (self.y_val_train.sub(y_val_pred, axis=0))
-        mse = grad.pow(2).mean()
-        #print(grad)
-        #print(y_val_to_ensemble)
-        grad = (-self.y_val_to_ensemble_train).mul(grad, axis=0)
-        grad = grad.groupby(self.index_y_train).mean()
-        grad = grad.div(mse, axis=0)
-        #print(grad)
-        #grad = grad.mul(self.loss_weights_train, axis=0).values
-        #print(grad)
+        diff_actual_y_val = self.y_val_train.sub(y_val_pred, axis=0)
+        diff_ensemble_y_val = self.y_val_to_ensemble_train.sub(y_val_pred, axis=0)
+        grad_pred_model = preds_transformed.mul(diff_ensemble_y_val, axis=0)
 
-        hess = self.y_val_to_ensemble_train.pow(2)
+        #print(diff_actual_y_val)
+        #print(diff_pred_model)
+        grad = 2*(-grad_pred_model).mul(diff_actual_y_val, axis=0)#.mul(, axis=0)
+        grad = grad.groupby(self.index_y_train).mean()
+
+        if self.loss_weights is not None:
+            grad = grad.mul(self.loss_weights_train, axis=0)
+
+        hess = diff_ensemble_y_val.mul(diff_actual_y_val.pow(1), axis=0)#2*(grad_pred_model.pow(2))
         hess = hess.groupby(self.index_y_train).mean()
-        hess = grad + hess
-        hess = hess.div(mse, axis=0)
+        hess = (1-2*preds_transformed).pow(1).mul(2*0.5*(preds_transformed.pow(0)), axis=0).mul(hess, axis=0)
+
+        #second_term_hess = diff_ensemble_y_val.pow(2).groupby(self.index_y_train).mean()
+        second_term_hess = abs(diff_ensemble_y_val).pow(2).groupby(self.index_y_train).mean()
+        #print(2*(preds_transformed.pow(2)))
+        second_term_hess = second_term_hess.mul(4*0.25*(preds_transformed.pow(0)), axis=0)
+
+        hess = hess + second_term_hess
+
+        if self.loss_weights is not None:
+            hess = hess.mul(self.loss_weights_train, axis=0)
+
+
+        #hess = -hess
+        print(hess.applymap(lambda x: isclose(x, 0, abs_tol=1e-4)).values.mean())
 
         grad = grad.values
         hess = hess.values
+        #print(grad.shape)
+        #print(hess.shape)
+        #print(grad)
+        #print(hess)
         #hess = hess.mul(self.loss_weights_train, axis=0).values
         #print(hess)
 
         #print(grad)
         #print(hess)
 
-        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
+        return grad.flatten(), hess.flatten()#/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
+
+    def mse_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
+        '''
+        Compute...
+        '''
+        preds_transformed = pd.DataFrame(predt, index=self.index_train,
+                                         columns=self.y_val_to_ensemble_train.columns)
+
+
+        y_val_pred = (preds_transformed*self.y_val_to_ensemble_train).sum(axis=1)
+        diff_actual_y_val = self.y_val_train.sub(y_val_pred, axis=0)
+        diff_ensemble_y_val = self.y_val_to_ensemble_train.sub(y_val_pred, axis=0)
+
+        mse = diff_actual_y_val.pow(2).groupby(self.index_y_train).mean()
+
+        # Gradient
+        grad_pred_model = preds_transformed.mul(diff_ensemble_y_val, axis=0)
+
+        #print(diff_actual_y_val)
+        #print(diff_pred_model)
+        grad = 2*(-grad_pred_model).mul(diff_actual_y_val, axis=0)#.mul(, axis=0)
+        grad = grad.groupby(self.index_y_train).mean()
+
+        #grad = grad.div(mse, axis=0)
+
+        if self.loss_weights is not None:
+            grad = grad.mul(self.loss_weights_train, axis=0)
+
+
+        #Hessian
+        hess = diff_ensemble_y_val.mul(diff_actual_y_val.pow(1), axis=0)#2*(grad_pred_model.pow(2))
+        hess = hess.groupby(self.index_y_train).mean()
+        hess = (1-2*preds_transformed).pow(0).mul(2*0.5*(preds_transformed.pow(0)), axis=0).mul(hess, axis=0)
+
+        #second_term_hess = diff_ensemble_y_val.pow(2).groupby(self.index_y_train).mean()
+        second_term_hess = abs(diff_ensemble_y_val).pow(2).groupby(self.index_y_train).mean()
+        #print(2*(preds_transformed.pow(2)))
+        second_term_hess = second_term_hess.mul(4*0.25*(preds_transformed.pow(0)), axis=0)
+
+        hess = hess + second_term_hess
+
+        #hess = hess.div(mse, axis=0) - grad.pow(2)#.div(mse.pow(2), axis=0)
+
+        if self.loss_weights is not None:
+            hess = hess.mul(self.loss_weights_train, axis=0)
+
+
+        #hess = -hess
+        print(hess.applymap(lambda x: isclose(x, 0, abs_tol=1e-4)).values.mean())
+
+        grad = grad.values
+        hess = hess.values
+        #print(grad.shape)
+        #print(hess.shape)
+        #print(grad)
+        #print(hess)
+        #hess = hess.mul(self.loss_weights_train, axis=0).values
+        #print(hess)
+
+        #print(grad)
+        #print(hess)
+
+        return grad.flatten(), hess.flatten()#/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
+
 
     def mse_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
         '''
@@ -268,14 +304,17 @@ class FForma(CheckInput):
                                          columns=y_val_to_ensemble.columns)
 
         y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
-        mse = y_val.sub(y_val_pred, axis=0).pow(2)
+        mse = y_val.sub(y_val_pred, axis=0)
+        mse = mse.pow(2)
 
         #print(mse)
-        mse = mse.groupby(mse.index.get_level_values('unique_id')).mean()
+        mse = mse.groupby(mse.index.get_level_values('unique_id')).mean()#.pow(1/2)
         #print(mse)
-        mse = 0.5*np.log(mse) - 0.5*np.log(self.loss_weights.loc[y_index])#mse.mul(self.loss_weights.loc[y_index]).pow(1/2)
+        #mse = 0.5*np.log(mse) #- 0.5*np.log(self.loss_weights.loc[y_index])#
+        if self.loss_weights is not None:
+            mse = mse.mul(self.loss_weights.loc[y_index])#.pow(1/2)
         #print(mse.shape)
-        mse = mse.values.sum()
+        mse = mse.values.mean()
 
         return 'MSE-loss', mse
 
@@ -298,8 +337,11 @@ class FForma(CheckInput):
         self.y_val_to_ensemble = y_val_df.drop(columns='y')
         self.y_val = y_val_df['y']
         # Train-validation sets for XGBoost
-        self.loss_weights = weights
-        self.contribution_to_error = errors.mul(self.loss_weights, axis=0)
+        if weights is not None:
+            self.loss_weights = weights
+        else:
+            self.loss_weights = None
+        self.contribution_to_error = errors#.mul(self.loss_weights, axis=0)
         self.best_models_ = self.contribution_to_error.values.argmin(axis=1)
         self.feats_, self.holdout_feats_ = feats, holdout_feats
 
@@ -319,9 +361,13 @@ class FForma(CheckInput):
 
         self.y_val_to_ensemble_train = self.y_val_to_ensemble.loc[self.index_train]
         self.y_val_train = self.y_val.loc[self.index_train]
-        self.loss_weights_train = self.loss_weights.loc[self.index_train]
+
+        if self.loss_weights is not None:
+            self.loss_weights_train = self.loss_weights.loc[self.index_train]
 
         self.index_y_train = self.y_val_to_ensemble_train.index.get_level_values('unique_id')
+
+        #print(self.y_val_to_ensemble_train)
 
         self.init_params = {
             'objective': 'multi:softprob',
@@ -422,8 +468,7 @@ class FForma(CheckInput):
                 feval=self.loss,
                 evals=[(self.dtrain, 'train'), (self.dvalid, 'eval')],
                 early_stopping_rounds=self.early_stopping_rounds,
-                verbose_eval = self.verbose_eval,
-                maximize=False
+                verbose_eval = self.verbose_eval
             )
         else:
             gbm_model = xgb.train(
@@ -505,6 +550,45 @@ class FForma(CheckInput):
         feats = tsfeatures(complete_data)
 
         return feats, holdout_feats
+     # Objective function for xgb
+    def fforma_objective(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (np.ndarray, np.ndarray):
+        '''
+        Compute...
+        '''
+        y = dtrain.get_label().astype(int)
+        #print(y)
+        n_train = len(y)
+        #print(predt.shape)
+        #print(predt)
+        preds_transformed = predt#softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
+        #https://github.com/dmlc/xgboost/blob/0ddb8a7661013c75674704872c22273415268dbd/demo/guide-python/custom_objective.py#L29-L33
+        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
+        #print(weighted_avg_loss_func.shape)
+        grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
+        #print(grad)
+        #grad = preds_transformer*self.contribution_to_error[y, :]
+        #print(grad.shape)
+        hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
+        #hess = grad*(1 - 2*preds_transformed)
+        #hess = self.contribution_to_error[y, :]
+        #print(grad)
+        return grad.flatten()/np.linalg.norm(grad), hess.flatten()/np.linalg.norm(hess)
+
+    def fforma_loss(self, predt: np.ndarray, dtrain: xgb.DMatrix) -> (str, float):
+        '''
+        Compute...
+        '''
+        y = dtrain.get_label().astype(int)
+        n_train = len(y)
+        #print(predt.shape)
+        #print(predt)
+        preds_transformed = predt#softmax(predt, axis=1)#np.array([softmax(row) for row in predt])
+        #print(preds_transformed)
+        #print(predt)
+        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1)#.reshape((n_train, 1))
+        fforma_loss = weighted_avg_loss_func.mean()#sum()/n_train
+        #print(grad)
+        return 'FFORMA-loss', fforma_loss
 
     def fit(self, y_train_df=None, y_val_df=None,
             val_periods=None,
