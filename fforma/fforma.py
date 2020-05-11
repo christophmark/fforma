@@ -125,30 +125,37 @@ class FForma(CheckInput, LightGBM, XGBoost):
         '''
         Compute...
         '''
+        y = dtrain.get_label().astype(int)
+        y_index = self.indices[y]
+        y_val_to_ensemble = self.y_val_to_ensemble.loc[y_index]
+        y_val = self.y_val.loc[y_index]
+
+        y_train_index = y_val.index.get_level_values('unique_id')
+
         preds = np.reshape(predt,
-                          (len(self.index_train), len(self.y_val_to_ensemble_train.columns)),
+                          self.contribution_to_error[y, :].shape,
                           order='F')
         #lightgbm uses margins!
         preds = softmax(preds, axis=1)
         #print(preds)
-        preds_transformed = pd.DataFrame(preds, index=self.index_train,
-                                         columns=self.y_val_to_ensemble_train.columns)
+        preds_transformed = pd.DataFrame(preds, index=y_index,
+                                         columns=y_val_to_ensemble.columns)
 
 
-        y_val_pred = (preds_transformed*self.y_val_to_ensemble_train).sum(axis=1)
-        diff_actual_y_val = self.y_val_train.sub(y_val_pred.pow(1), axis=0)
-        diff_ensemble_y_val = self.y_val_to_ensemble_train.sub(y_val_pred, axis=0)
+        y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
+        diff_actual_y_val = y_val.sub(y_val_pred.pow(1), axis=0)
+        diff_ensemble_y_val = y_val_to_ensemble.sub(y_val_pred, axis=0)
 
-        mse = diff_actual_y_val.pow(2).groupby(self.index_y_train).mean()
+        mse = diff_actual_y_val.pow(2).groupby(y_train_index).mean()
 
         # Gradient
         grad_pred_model = preds_transformed.pow(1).mul(diff_ensemble_y_val, axis=0)
 
         grad_mse = 2*(-grad_pred_model.pow(1)).mul(diff_actual_y_val.pow(1), axis=0)#.mul(, axis=0)
-        grad_mse = grad_mse.groupby(self.index_y_train).mean()
+        grad_mse = grad_mse.groupby(y_train_index).mean()
 
         if self.loss_weights is not None:
-            grad_mse = grad_mse.mul(self.loss_weights.loc[self.index_train], axis=0)
+            grad_mse = grad_mse.mul(self.loss_weights.loc[y_index], axis=0)
 
         #grad = 0.5*grad_mse.div(mse.pow(1/2), axis=0)
         #if self.loss_weights is not None:
@@ -156,18 +163,21 @@ class FForma(CheckInput, LightGBM, XGBoost):
 
         #Hessian
         hess_mse = -diff_ensemble_y_val.mul(diff_actual_y_val.pow(1), axis=0)
-        hess_mse = hess_mse.groupby(self.index_y_train).mean()
-        hess_mse = (1-2*preds_transformed).pow(0).mul(2*0.5*(preds_transformed.pow(0)), axis=0).mul(hess_mse, axis=0)
+        hess_mse = hess_mse.groupby(y_train_index).mean()
+        #hess_mse = (1-2*preds_transformed).pow(1).mul(2*(preds_transformed.pow(1)), axis=0).mul(hess_mse, axis=0)
 
         #second_term_hess = diff_ensemble_y_val.pow(2).groupby(self.index_y_train).mean()
-        second_term_hess_mse = abs(diff_ensemble_y_val).pow(2).groupby(self.index_y_train).mean()
-        second_term_hess_mse = second_term_hess_mse.mul(2*0.5*(preds_transformed.pow(0)), axis=0)
+        second_term_hess_mse = abs(diff_ensemble_y_val).pow(2).groupby(y_train_index).mean()
+        #second_term_hess_mse = second_term_hess_mse.mul(2*(preds_transformed.pow(2)), axis=0)
 
         hess_mse = hess_mse + second_term_hess_mse
 
+        #print(hess_mse)
         if self.loss_weights is not None:
-            hess_mse = hess_mse.mul(self.loss_weights.loc[self.index_train], axis=0)
-        
+            hess_mse = hess_mse.mul(self.loss_weights.loc[y_index], axis=0)
+
+        #print(hess_mse)
+
         # second_term_hess = grad_mse.pow(2).div(2*mse, axis=0)
         # hess = hess-second_term_hess
         #
@@ -205,11 +215,11 @@ class FForma(CheckInput, LightGBM, XGBoost):
         mse = mse.pow(2)
 
         #print(mse)
-        mse = mse.groupby(mse.index.get_level_values('unique_id')).mean()#.pow(1/2)
+        mse = mse.groupby(mse.index.get_level_values('unique_id')).mean().pow(1/2)
         #print(mse)
         #mse = 0.5*np.log(mse) #+ 0.5*np.log(self.loss_weights.loc[y_index])#
         if self.loss_weights is not None:
-            mse = mse.mul(self.loss_weights.loc[y_index], axis=0).pow(1/2)
+            mse = mse.mul(self.loss_weights.loc[y_index], axis=0)#.pow(1/2)
 
         #print(mse.shape)
         mse = mse.values.sum()
