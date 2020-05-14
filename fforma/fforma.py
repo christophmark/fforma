@@ -24,12 +24,10 @@ from math import isclose
 
 
 class FForma(CheckInput, LightGBM, XGBoost):
-    def __init__(self, obj='owa',
-                 max_evals=100, verbose_eval=True,
-                 num_boost_round=100, early_stopping_rounds=10,
+    def __init__(self, objective='fforma', verbose_eval=True,
+                 early_stopping_rounds=10,
                  params=None,
-                 bayesian_opt=False,
-                 custom_objective='fforma',
+                 param_grid=None,
                  use_cv=False, nfolds=5,
                  threads=None, seed=260294):
         """ Feature-based Forecast Model Averaging.
@@ -46,19 +44,20 @@ class FForma(CheckInput, LightGBM, XGBoost):
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
-        self.max_evals = max_evals
-
         self.dict_obj = {'fforma': (self.fforma_objective, self.fforma_loss),
-                         'mse': (self.mse_objective, self.mse_loss)}
+                         'fformadl': (self.fformadl_objective, self.fformadl_loss)}
 
         self.verbose_eval = verbose_eval
-        self.num_boost_round = num_boost_round
         self.early_stopping_rounds = early_stopping_rounds
 
         self.params = params
-        self.bayesian_opt = bayesian_opt
+        self.grid_search = False
+        self.param_grid = param_grid
 
-        self.custom_objective = custom_objective
+        if self.param_grid is not None:
+            self.grid_search = True
+
+        self.objective = objective
 
         self.use_cv = use_cv
         self.nfolds = nfolds
@@ -69,6 +68,8 @@ class FForma(CheckInput, LightGBM, XGBoost):
 
         self.seed = seed
 
+        self.fobj, self.feval = self.dict_obj[self.objective]
+
     def _tsfeatures(self, y_train_df, y_val_df, freq):
         #TODO receive panel of freq
         complete_data = pd.concat([y_train_df, y_test_df.filter(items=['unique_id', 'ds', 'y'])])
@@ -77,51 +78,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
 
         return feats, holdout_feats
 
-    def mse_objective_or(self, predt: np.ndarray, dtrain) -> (np.ndarray, np.ndarray):
-        '''
-        Compute...
-        '''
-        preds_transformed = pd.DataFrame(predt, index=self.index_train,
-                                         columns=self.y_val_to_ensemble_train.columns)
-
-
-        y_val_pred = (preds_transformed*self.y_val_to_ensemble_train).sum(axis=1)
-        diff_actual_y_val = self.y_val_train.sub(y_val_pred, axis=0)
-        diff_ensemble_y_val = self.y_val_to_ensemble_train.sub(y_val_pred, axis=0)
-        grad_pred_model = preds_transformed.mul(diff_ensemble_y_val, axis=0)
-
-        #print(diff_actual_y_val)
-        #print(diff_pred_model)
-        grad = 2*(-grad_pred_model).mul(diff_actual_y_val, axis=0)#.mul(, axis=0)
-        grad = grad.groupby(self.index_y_train).mean()
-
-        if self.loss_weights is not None:
-            grad = grad.mul(self.loss_weights_train, axis=0)
-
-        hess = diff_ensemble_y_val.mul(diff_actual_y_val.pow(1), axis=0)#2*(grad_pred_model.pow(2))
-        hess = hess.groupby(self.index_y_train).mean()
-        hess = (1-2*preds_transformed).pow(1).mul(2*0.5*(preds_transformed.pow(0)), axis=0).mul(hess, axis=0)
-
-        #second_term_hess = diff_ensemble_y_val.pow(2).groupby(self.index_y_train).mean()
-        second_term_hess = abs(diff_ensemble_y_val).pow(2).groupby(self.index_y_train).mean()
-        #print(2*(preds_transformed.pow(2)))
-        second_term_hess = second_term_hess.mul(4*0.25*(preds_transformed.pow(0)), axis=0)
-
-        hess = hess + second_term_hess
-
-        if self.loss_weights is not None:
-            hess = hess.mul(self.loss_weights_train, axis=0)
-
-
-        #hess = -hess
-        print(hess.applymap(lambda x: isclose(x, 0, abs_tol=1e-4)).values.mean())
-
-        grad = grad.values
-        hess = hess.values
-
-        return grad.flatten('F'), hess.flatten('F')
-
-    def mse_objective(self, predt: np.ndarray, dtrain) -> (np.ndarray, np.ndarray):
+    def fformadl_objective(self, predt: np.ndarray, dtrain) -> (np.ndarray, np.ndarray):
         '''
         Compute...
         '''
@@ -135,64 +92,53 @@ class FForma(CheckInput, LightGBM, XGBoost):
         preds = np.reshape(predt,
                           self.contribution_to_error[y, :].shape,
                           order='F')
+
         #lightgbm uses margins!
         preds = softmax(preds, axis=1)
-        #print(preds)
         preds_transformed = pd.DataFrame(preds, index=y_index,
                                          columns=y_val_to_ensemble.columns)
 
 
         y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
-        diff_actual_y_val = y_val.sub(y_val_pred.pow(1), axis=0)
+        diff_actual_y_val = y_val.sub(y_val_pred, axis=0)
         diff_ensemble_y_val = y_val_to_ensemble.sub(y_val_pred, axis=0)
 
-        mse = diff_actual_y_val.pow(2).groupby(y_train_index).mean()
-
         # Gradient
-        grad_pred_model = preds_transformed.pow(1).mul(diff_ensemble_y_val, axis=0)
+        #grad_pred_model = preds_transformed.mul(diff_ensemble_y_val, axis=0)
+        grad_pred_model = preds_transformed.mul(diff_ensemble_y_val, axis=0)
 
-        grad_mse = 2*(-grad_pred_model.pow(1)).mul(diff_actual_y_val.pow(1), axis=0)#.mul(, axis=0)
+
+        #grad_mse = (-grad_pred_model).mul(diff_actual_y_val, axis=0)
+        grad_mse = (-grad_pred_model).mul(diff_actual_y_val, axis=0)
         grad_mse = grad_mse.groupby(y_train_index).mean()
+        grad_mse = 2*grad_mse
 
         if self.loss_weights is not None:
             grad_mse = grad_mse.mul(self.loss_weights.loc[y_index], axis=0)
 
-        #grad = 0.5*grad_mse.div(mse.pow(1/2), axis=0)
-        #if self.loss_weights is not None:
-        #    grad = grad.mul(self.loss_weights.loc[self.index_train], axis=0)
-
         #Hessian
-        hess_mse = -diff_ensemble_y_val.mul(diff_actual_y_val.pow(1), axis=0)
-        hess_mse = hess_mse.groupby(y_train_index).mean()
-        #hess_mse = (1-2*preds_transformed).pow(1).mul(2*(preds_transformed.pow(1)), axis=0).mul(hess_mse, axis=0)
+        #hess_pred_model = (1-preds_transformed).mul(diff_ensemble_y_val, axis=0) - grad_pred_model
+        hess_pred_model = (1-preds_transformed).mul(y_val_pred, axis=0) - grad_pred_model
+        hess_pred_model = preds_transformed*hess_pred_model
+        hess_mse = (-hess_pred_model).mul(diff_ensemble_y_val, axis=0)
 
-        #second_term_hess = diff_ensemble_y_val.pow(2).groupby(self.index_y_train).mean()
-        second_term_hess_mse = abs(diff_ensemble_y_val).pow(2).groupby(y_train_index).mean()
-        #second_term_hess_mse = second_term_hess_mse.mul(2*(preds_transformed.pow(2)), axis=0)
+        second_term_hess_mse = grad_pred_model.pow(2)
 
         hess_mse = hess_mse + second_term_hess_mse
+        hess_mse = hess_mse.groupby(y_train_index).mean()
+        hess_mse = 2*hess_mse
 
-        #print(hess_mse)
         if self.loss_weights is not None:
             hess_mse = hess_mse.mul(self.loss_weights.loc[y_index], axis=0)
 
-        #print(hess_mse)
-
-        # second_term_hess = grad_mse.pow(2).div(2*mse, axis=0)
-        # hess = hess-second_term_hess
-        #
-        # hess = 0.5*hess.div(mse.pow(1/2), axis=0)
-
-        # if self.loss_weights is not None:
-        #     hess = hess.mul(self.loss_weights.loc[self.index_y_train], axis=0)
-
         grad = grad_mse.values
-        hess = hess_mse.values #softmax(np.zeros(preds.shape), axis=0)#hess.values #+ 100
+        hess = hess_mse.values
+
 
         return grad.flatten('F'), hess.flatten('F')
 
 
-    def mse_loss(self, predt: np.ndarray, dtrain) -> (str, float):
+    def fformadl_loss(self, predt: np.ndarray, dtrain) -> (str, float):
         '''
         Compute...
         '''
@@ -209,7 +155,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
         preds = softmax(preds, axis=1)
         preds_transformed = pd.DataFrame(preds, index=self.holdout_feats_.loc[y_index].index,
                                          columns=y_val_to_ensemble.columns)
-        #print(preds_transformed)
+
         y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
         mse = y_val.sub(y_val_pred, axis=0)
         mse = mse.pow(2)
@@ -222,9 +168,11 @@ class FForma(CheckInput, LightGBM, XGBoost):
             mse = mse.mul(self.loss_weights.loc[y_index], axis=0)#.pow(1/2)
 
         #print(mse.shape)
-        mse = mse.values.sum()
+            mse = mse.values.sum()
+        else:
+            mse = mse.values.mean()
 
-        return 'MSE-loss', mse, False
+        return 'FFORMADL-loss', mse, False
 
     # Objective function for xgb
     def fforma_objective(self, predt: np.ndarray, dtrain) -> (np.ndarray, np.ndarray):
@@ -238,7 +186,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
                           order='F')
         preds_transformed = softmax(preds, axis=1)
 
-        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))#print(y)
+        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1).reshape((n_train, 1))
 
         grad = preds_transformed*(self.contribution_to_error[y, :] - weighted_avg_loss_func)
         hess = self.contribution_to_error[y,:]*preds_transformed*(1.0-preds_transformed) - grad*preds_transformed
@@ -257,7 +205,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
                           order='F')
         #lightgbm uses margins!
         preds_transformed = softmax(preds, axis=1)
-        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1)#.reshape((n_train, 1))
+        weighted_avg_loss_func = (preds_transformed*self.contribution_to_error[y, :]).sum(axis=1)
         fforma_loss = weighted_avg_loss_func.mean()
 
         return 'FFORMA-loss', fforma_loss, False
@@ -267,7 +215,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
             errors=None, holdout_feats=None,
             feats=None, weights=None,
             freq=None, base_model=None,
-            sorted_data=False):
+            sorted_data=False, init_score=None):
         """
         y_train_df: pandas df
             panel with columns unique_id, ds, y
@@ -277,9 +225,6 @@ class FForma(CheckInput, LightGBM, XGBoost):
             int: number of val periods
             pandas df: panel with columns unique_id, val_periods
         """
-
-        self.y_val_to_ensemble = y_val_df.drop(columns='y')
-        self.y_val = y_val_df['y']
 
         self.loss_weights = weights
 
@@ -321,7 +266,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
                                                  self.best_models_,
                                                  np.arange(self.holdout_feats_.shape[0]),
                                                  random_state=self.seed,
-                                                 stratify = self.best_models_)
+                                                 stratify=self.best_models_)
 
         self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
         self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
@@ -330,10 +275,27 @@ class FForma(CheckInput, LightGBM, XGBoost):
         self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
         self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
 
-        self.y_val_to_ensemble_train = self.y_val_to_ensemble.loc[self.index_train]
-        self.y_val_train = self.y_val.loc[self.index_train]
 
-        self.index_y_train = self.y_val_to_ensemble_train.index.get_level_values('unique_id')
+        if self.objective == 'fformadl':
+            assert y_val_df is not None, 'FFORMADL needs y_val_df'
+
+            self.y_val_to_ensemble = y_val_df.drop(columns='y')
+            self.y_val = y_val_df['y']
+            self.y_val_to_ensemble_train = self.y_val_to_ensemble.loc[self.index_train]
+            self.y_val_train = self.y_val.loc[self.index_train]
+            self.index_y_train = self.y_val_to_ensemble_train.index.get_level_values('unique_id')
+
+        if self.objective in self.dict_obj.keys():
+            if init_score is not None:
+                self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.indices_train_,
+                                          init_score=init_score.loc[self.index_train].values.flatten('F'))
+            else:
+                self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.indices_train_)
+            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.indices_val_)
+        else:
+            self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.best_models_train_)
+            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.best_models_val_)
+
 
         self.init_params = {
             'objective': 'multiclass',
@@ -343,40 +305,38 @@ class FForma(CheckInput, LightGBM, XGBoost):
             'seed': self.seed
         }
 
-
-        if self.custom_objective:
-            self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.indices_train_)
-            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.indices_val_)
-            self.objective, self.loss = self.dict_obj[self.custom_objective]
-        else:
-            self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.best_models_train_)
-            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.best_models_val_)
-            self.custom_objective=False
-
-        # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
         if self.params:
             params = {**self.params, **self.init_params}
         else:
-            params = {
-                'n_estimators': 1000,
-                'eta': 0.58,
-                'max_depth': 14,
-                'subsample': 0.92,
-                'colsample_bytree': 0.77,
-                'lambda_l1': 1
-            }
-            params = self.init_params#{**params, **self.init_params}
+            params = {'n_estimators': 100}
+            params = {**params, **self.init_params}
+        # else:
+        #     # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
+        #     params = {
+        #         'n_estimators': 94,
+        #         'eta': 0.58,
+        #         'max_depth': 14,
+        #         'subsample': 0.92,
+        #         'colsample_bytree': 0.77
+        #     }
+        #     params = {**params, **self.init_params}
 
 
         #self.xgb = self._train_xgboost(params)
-        self.lgb = self._train_lightgbm(params)
-
-
-        self.error_columns = errors.columns
+        if self.grid_search:
+            self.verbose_eval_grid = self.verbose_eval
+            self.verbose_eval = False
+            self.lgb = self._search_optimal_params_lightgbm(self.param_grid)
+        else:
+            self.lgb = self._train_lightgbm(params)
 
         #weights = self.xgb.predict(xgb.DMatrix(self.feats_))
-        weights = self.lgb.predict(self.feats_, raw_score=True)
-        weights = softmax(weights, axis=1)
+        raw_score_ = self.lgb.predict(self.feats_, raw_score=True)
+        self.raw_score_ = pd.DataFrame(raw_score_,
+                                       index=self.feats_.index,
+                                       columns=errors.columns)
+
+        weights = softmax(raw_score_, axis=1)
         self.weights_ = pd.DataFrame(weights,
                                      index=self.feats_.index,
                                      columns=errors.columns)
@@ -384,16 +344,22 @@ class FForma(CheckInput, LightGBM, XGBoost):
         return self
 
 
-    def predict(self, y_hat_df):
+    def predict(self, y_hat_df, fforms=False):
         """
         Parameters
         ----------
         y_hat_df: pandas df
             panel with columns unique_id, ds, {model} for each model to ensemble
         """
-        fforma_preds = self.weights_ * y_hat_df
+        if fforms:
+            weights = (self.weights_.div(self.weights_.max(axis=1), axis=0) == 1)*1
+            name = 'fforms_prediction'
+        else:
+            weights = self.weights_
+            name = 'fforma_prediction'
+        fforma_preds = weights * y_hat_df
         fforma_preds = fforma_preds.sum(axis=1)
-        fforma_preds.name = 'fforma_prediction'
+        fforma_preds.name = name
         preds = pd.concat([y_hat_df, fforma_preds], axis=1)
 
         return preds
