@@ -1,5 +1,6 @@
 import pandas as pd
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import StratifiedKFold
 from statsmodels.tsa.seasonal import STL
 import xgboost as xgb
 from sklearn.multioutput import MultiOutputRegressor
@@ -7,7 +8,6 @@ from sklearn.preprocessing import OneHotEncoder
 from scipy.special import softmax
 import copy
 import multiprocessing as mp
-from sklearn.model_selection import train_test_split
 import pickle
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 import tqdm
@@ -23,12 +23,13 @@ from math import isclose
 
 
 
-class FForma(CheckInput, LightGBM, XGBoost):
+class FFORMA(CheckInput, LightGBM, XGBoost):
     def __init__(self, objective='fforma', verbose_eval=True,
                  early_stopping_rounds=10,
                  params=None,
                  param_grid=None,
                  use_cv=False, nfolds=5,
+                 greedy_search=False,
                  threads=None, seed=260294):
         """ Feature-based Forecast Model Averaging.
 
@@ -44,31 +45,59 @@ class FForma(CheckInput, LightGBM, XGBoost):
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
-        self.dict_obj = {'fforma': (self.fforma_objective, self.fforma_loss),
-                         'fformadl': (self.fformadl_objective, self.fformadl_loss)}
+        self.dict_obj = {'FFORMA': (self.fforma_objective,
+                                    lambda predt, dtrain: [self.fforma_loss(predt, dtrain),
+                                                           self.fformadl_loss(predt, dtrain)]),
+                         'FFORMADL': (self.fformadl_objective, self.fformadl_loss)}
 
-        self.verbose_eval = verbose_eval
-        self.early_stopping_rounds = early_stopping_rounds
 
-        self.params = params
-        self.grid_search = False
-        self.param_grid = param_grid
-
-        if self.param_grid is not None:
-            self.grid_search = True
-
+        fobj, feval = self.dict_obj.get(objective, (None, self.fforma_loss))
         self.objective = objective
+        self.greedy_search = greedy_search
 
-        self.use_cv = use_cv
-        self.nfolds = nfolds
+
 
         # nthreads params
         if threads is None:
-            self.threads = mp.cpu_count() - 1
+            threads = mp.cpu_count() - 1
 
-        self.seed = seed
+        init_params = {
+            'objective': 'multiclass',
+            #'num_class': self.contribution_to_error.shape[1],
+            'nthread': threads,
+            'silent': 1,
+            'seed': seed
+        }
 
-        self.fobj, self.feval = self.dict_obj[self.objective]
+        if params:
+            train_params = {**params, **init_params}
+        else:
+            train_params = {'n_estimators': 100}
+            train_params = {**train_params, **init_params}
+
+
+        if param_grid is not None:
+            pass
+        elif use_cv:
+            folds = lambda holdout_feats, best_models: StratifiedKFold(n_splits=nfolds).split(holdout_feats, best_models)
+
+            self._train = lambda holdout_feats, best_models: self._train_lightgbm_cv(holdout_feats, best_models,
+                                                                                     train_params, fobj, feval,
+                                                                                     early_stopping_rounds, verbose_eval,
+                                                                                     seed, folds)
+        else:
+            self._train = lambda holdout_feats, best_models: self._train_lightgbm(holdout_feats, best_models,
+                                                                                  train_params, fobj, feval,
+                                                                                  early_stopping_rounds, verbose_eval,
+                                                                                  seed)
+
+        # if self.grid_search:
+        #     self.verbose_eval_grid = self.verbose_eval
+        #     self.verbose_eval = False
+        #     self.lgb = self._search_optimal_params_lightgbm(self.param_grid)
+        # else:
+        #     self.lgb = self._train_lightgbm(params)
+
 
     def _tsfeatures(self, y_train_df, y_val_df, freq):
         #TODO receive panel of freq
@@ -153,7 +182,7 @@ class FForma(CheckInput, LightGBM, XGBoost):
                            order='F')
         #lightgbm uses margins!
         preds = softmax(preds, axis=1)
-        preds_transformed = pd.DataFrame(preds, index=self.holdout_feats_.loc[y_index].index,
+        preds_transformed = pd.DataFrame(preds, index=y_index,
                                          columns=y_val_to_ensemble.columns)
 
         y_val_pred = (preds_transformed*y_val_to_ensemble).sum(axis=1)
@@ -246,100 +275,70 @@ class FForma(CheckInput, LightGBM, XGBoost):
         else:
             self._check_valid_columns(errors, cols=['unique_id'], cols_index=['unique_id'])
             self.contribution_to_error = errors.values
-            self.best_models_ = self.contribution_to_error.argmin(axis=1)
+            best_models = self.contribution_to_error.argmin(axis=1)
 
 
         if feats is None:
-            self.feats_, self.holdout_feats_ = self._tsfeatures(y_train_df, y_val_df, freq)
+            feats, holdout_feats = self._tsfeatures(y_train_df, y_val_df, freq)
         else:
             assert holdout_feats is not None, "when passing feats you must provide holdout feats"
             self._check_valid_columns(feats, cols=['unique_id'], cols_index=['unique_id'])
-            self.feats_, self.holdout_feats_ = feats, holdout_feats
 
+        self.indices = holdout_feats.index.get_level_values('unique_id')
 
-        # Train-validation sets for XGBoost
-        self.holdout_feats_train_, self.holdout_feats_val_, \
-            self.best_models_train_, \
-            self.best_models_val_, \
-            self.indices_train_, \
-            self.indices_val_ = train_test_split(self.holdout_feats_,
-                                                 self.best_models_,
-                                                 np.arange(self.holdout_feats_.shape[0]),
-                                                 random_state=self.seed,
-                                                 stratify=self.best_models_)
-
-        self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
-        self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
-
-        self.indices = self.holdout_feats_.index.get_level_values('unique_id')
-        self.index_train = self.holdout_feats_train_.index.get_level_values('unique_id')
-        self.index_val = self.holdout_feats_val_.index.get_level_values('unique_id')
-
-
-        if self.objective == 'fformadl':
+        if self.objective == 'FFORMADL':
             assert y_val_df is not None, 'FFORMADL needs y_val_df'
 
-            self.y_val_to_ensemble = y_val_df.drop(columns='y')
-            self.y_val = y_val_df['y']
-            self.y_val_to_ensemble_train = self.y_val_to_ensemble.loc[self.index_train]
-            self.y_val_train = self.y_val.loc[self.index_train]
-            self.index_y_train = self.y_val_to_ensemble_train.index.get_level_values('unique_id')
-
-        if self.objective in self.dict_obj.keys():
-            if init_score is not None:
-                self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.indices_train_,
-                                          init_score=init_score.loc[self.index_train].values.flatten('F'))
-            else:
-                self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.indices_train_)
-            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.indices_val_)
-        else:
-            self.dtrain = lgb.Dataset(data=self.holdout_feats_train_, label=self.best_models_train_)
-            self.dvalid = lgb.Dataset(data=self.holdout_feats_val_, label=self.best_models_val_)
+        self.y_val_to_ensemble = y_val_df.drop(columns='y')
+        self.y_val = y_val_df['y']
 
 
-        self.init_params = {
-            'objective': 'multiclass',
-            'num_class': self.contribution_to_error.shape[1],
-            'nthread': self.threads,
-            'silent': 1,
-            'seed': self.seed
-        }
+        self.lgb = self._train(holdout_feats, best_models)
 
-        if self.params:
-            params = {**self.params, **self.init_params}
-        else:
-            params = {'n_estimators': 100}
-            params = {**params, **self.init_params}
-        # else:
-        #     # From http://htmlpreview.github.io/?https://github.com/robjhyndman/M4metalearning/blob/master/docs/M4_methodology.html
-        #     params = {
-        #         'n_estimators': 94,
-        #         'eta': 0.58,
-        #         'max_depth': 14,
-        #         'subsample': 0.92,
-        #         'colsample_bytree': 0.77
-        #     }
-        #     params = {**params, **self.init_params}
-
-
-        #self.xgb = self._train_xgboost(params)
-        if self.grid_search:
-            self.verbose_eval_grid = self.verbose_eval
-            self.verbose_eval = False
-            self.lgb = self._search_optimal_params_lightgbm(self.param_grid)
-        else:
-            self.lgb = self._train_lightgbm(params)
-
-        #weights = self.xgb.predict(xgb.DMatrix(self.feats_))
-        raw_score_ = self.lgb.predict(self.feats_, raw_score=True)
+        raw_score_ = self.lgb.predict(feats, raw_score=True)
         self.raw_score_ = pd.DataFrame(raw_score_,
-                                       index=self.feats_.index,
+                                       index=feats.index,
                                        columns=errors.columns)
 
         weights = softmax(raw_score_, axis=1)
         self.weights_ = pd.DataFrame(weights,
-                                     index=self.feats_.index,
+                                     index=feats.index,
                                      columns=errors.columns)
+
+        if self.greedy_search:
+            performance = self.lgb.best_score['valid_1']['multi_logloss']
+            improvement = True
+            errors = copy.deepcopy(errors)
+            print(f'\nInitial performance: {performance}\n')
+            while improvement and errors.shape[1]>2:
+                print(errors.shape)
+                model_to_remove = self.raw_score_.mean().idxmin()
+                print(f'Removing {model_to_remove}\n')
+                errors = errors.drop(columns=model_to_remove)
+                self.contribution_to_error = errors.values
+                self.y_val_to_ensemble = self.y_val_to_ensemble.drop(columns=model_to_remove)
+                best_models = self.contribution_to_error.argmin(axis=1)
+
+                new_lgb = self._train(holdout_feats, best_models)
+                performance_new_lgb = new_lgb.best_score['valid_1']['multi_logloss']
+                better_model = performance_new_lgb < performance
+                if not better_model:
+                    print('\nImprovement not reached, stopping greedy_search')
+                    improvement = False
+                else:
+                    performance = performance_new_lgb
+                    print(f'\nReached better performance {performance}\n')
+                    self.lgb = new_lgb
+
+                    raw_score_ = self.lgb.predict(feats, raw_score=True)
+                    self.raw_score_ = pd.DataFrame(raw_score_,
+                                                   index=feats.index,
+                                                   columns=errors.columns)
+
+                    weights = softmax(raw_score_, axis=1)
+                    self.weights_ = pd.DataFrame(weights,
+                                                 index=feats.index,
+                                                 columns=errors.columns)
 
         return self
 
