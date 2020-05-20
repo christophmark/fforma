@@ -91,13 +91,6 @@ class FFORMA(CheckInput, LightGBM, XGBoost):
                                                                                   early_stopping_rounds, verbose_eval,
                                                                                   seed)
 
-        # if self.grid_search:
-        #     self.verbose_eval_grid = self.verbose_eval
-        #     self.verbose_eval = False
-        #     self.lgb = self._search_optimal_params_lightgbm(self.param_grid)
-        # else:
-        #     self.lgb = self._train_lightgbm(params)
-
 
     def _tsfeatures(self, y_train_df, y_val_df, freq):
         #TODO receive panel of freq
