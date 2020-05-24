@@ -1,35 +1,30 @@
 import pandas as pd
 
-class CheckInput:
+def _check_valid_df(df):
 
-    def __init__(self):
-        pass
+    is_pandas_df = isinstance(df, pd.DataFrame)
+    assert  is_pandas_df or isinstance(df, pd.Series)
 
-    def _check_valid_df(self, df):
+    return is_pandas_df
 
-        is_pandas_df = isinstance(df, pd.DataFrame)
-        assert  is_pandas_df or isinstance(df, pd.Series)
+def _check_valid_columns(df,
+                         cols=['unique_id','ds', 'y'],
+                         cols_index=['unique_id', 'ds']):
 
-        return is_pandas_df
+    correct_cols_df = all([item in df.columns for item in cols])
+    correct_cols_index = all([item in df.index.names for item in cols_index])
 
-    def _check_valid_columns(self, df,
-                             cols=['unique_id','ds', 'y'],
-                             cols_index=['unique_id', 'ds']):
+    assert correct_cols_df or correct_cols_index
 
-        correct_cols_df = all([item in df.columns for item in cols])
-        correct_cols_index = all([item in df.index.names for item in cols_index])
+def _check_same_type(df_x, df_y):
+    assert type(df_x) == type(df_y)
 
-        assert correct_cols_df or correct_cols_index
+def _check_passed_dfs(df_x, df_y):
 
-    def _check_same_type(self, df_x, df_y):
-        assert type(df_x) == type(df_y)
+    for df in [df_x, df_y]:
+        is_pandas_df = _check_valid_df(df)
+        _check_valid_columns(df)
 
-    def _check_passed_dfs(self, df_x, df_y):
+    _check_same_type(df_x, df_y)
 
-        for df in [df_x, df_y]:
-            is_pandas_df = self._check_valid_df(df)
-            self._check_valid_columns(df)
-
-        self._check_same_type(df_x, df_y)
-
-        return is_pandas_df
+    return is_pandas_df
