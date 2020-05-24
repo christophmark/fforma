@@ -7,7 +7,7 @@
 # Installation
 
 ```python
-pip install fforma
+pip install git+https://github.com/FedericoGarza/fforma
 ```
 
 # Usage
