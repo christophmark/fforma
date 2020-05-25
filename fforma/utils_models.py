@@ -126,7 +126,7 @@ def _train_lightgbm_grid_search(holdout_feats, best_models,
 
     pbar = tqdm(ParameterGrid(param_grid))
     pbar.set_description('Best performance: ??')
-    
+
     for params in pbar:
 
         params = {**params, **init_params}
@@ -155,7 +155,7 @@ def _train_lightgbm_grid_search(holdout_feats, best_models,
 
 
     optimal_gbm_model = _train_lightgbm(holdout_feats, best_models,
-                                        params, fobj, feval,
+                                        best_params, fobj, feval,
                                         early_stopping_rounds,
                                         False, seed)
 
