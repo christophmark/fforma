@@ -11,7 +11,7 @@ from scipy.special import softmax
 from tsfeatures import tsfeatures
 from math import isclose
 from fforma.utils_input import _check_valid_df, _check_same_type, _check_passed_dfs, _check_valid_columns
-from fforma.utils_models import _train_lightgbm, _train_lightgbm_cv, _train_lightgbm_cv_optimal_params
+from fforma.utils_models import _train_lightgbm, _train_lightgbm_cv, _train_lightgbm_grid_search
 
 
 
@@ -38,7 +38,8 @@ class FFORMA:
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
-        self.dict_obj = {'FFORMA': (self.fforma_objective, self.fforma_loss)}
+        self.dict_obj = {'FFORMA': (self.fforma_objective, self.fforma_loss),
+                         'FFORMADL': (self.fformadl_objective, self.fformadl_loss)}
 
         fobj, feval = self.dict_obj.get(objective, (None, None))
         self.objective, self.greedy_search = objective, greedy_search
@@ -61,7 +62,12 @@ class FFORMA:
 
 
         if param_grid is not None:
-            pass
+            folds = lambda holdout_feats, best_models: StratifiedKFold(n_splits=nfolds).split(holdout_feats, best_models)
+
+            self._train = lambda holdout_feats, best_models: _train_lightgbm_grid_search(holdout_feats, best_models,
+                                                                                use_cv, init_params, param_grid, fobj, feval,
+                                                                                early_stopping_rounds, verbose_eval,
+                                                                                seed, folds)
         elif use_cv:
             folds = lambda holdout_feats, best_models: StratifiedKFold(n_splits=nfolds).split(holdout_feats, best_models)
 
@@ -124,7 +130,7 @@ class FFORMA:
             val_periods=None,
             errors=None, holdout_feats=None,
             feats=None, freq=None, base_model=None,
-            sorted_data=False):
+            sorted_data=False, weights=None):
         """
         y_train_df: pandas df
             panel with columns unique_id, ds, y
