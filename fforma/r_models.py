@@ -30,7 +30,7 @@ def forecast_object_to_dict(forecast_object):
 
 def get_forecast(fitted_model, h):
     """Calculate forecast from a fitted model."""
-    y_hat = forecast.forecast(fitted_modeled, h=h)
+    y_hat = forecast.forecast(fitted_model, h=h)
     y_hat = forecast_object_to_dict(y_hat)
     y_hat = y_hat['mean']
 
@@ -67,7 +67,7 @@ class ForecastModel:
         check_is_fitted(self, 'fitted_model_')
         h = X.shape[0]
 
-        y_hat = get_forecast_r(self.fitted_model_, h)
+        y_hat = get_forecast(self.fitted_model_, h)
 
         return y_hat
 
@@ -103,7 +103,7 @@ class ForecastObject:
 
         fitted_model = self.model(self.y_ts_, h)
 
-        y_hat = get_forecast_r(fitted_model, h)
+        y_hat = get_forecast(fitted_model, h)
 
         return y_hat
 
