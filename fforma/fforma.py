@@ -4,7 +4,6 @@ import multiprocessing as mp
 import lightgbm as lgb
 
 import copy
-import tqdm
 
 from sklearn.model_selection import StratifiedKFold
 from scipy.special import softmax
@@ -50,7 +49,6 @@ class FFORMA:
         init_params = {
             'objective': 'multiclass',
             'nthread': threads,
-            'silent': 1,
             'seed': seed
         }
 
@@ -143,7 +141,7 @@ class FFORMA:
 
         if (errors is None) and (feats is None):
             assert (y_train_df is not None) and (y_val_df is not None), "you must provide a y_train_df and y_val_df"
-            is_pandas_df = self._check_passed_dfs(y_train_df, y_val_df_)
+            is_pandas_df = _check_passed_dfs(y_train_df, y_val_df_)
 
             if not sorted_data:
                 if is_pandas_df:
@@ -158,6 +156,16 @@ class FFORMA:
             #calculate contribution_to_error(y_train_df, y_val_df)
         else:
             _check_valid_columns(errors, cols=['unique_id'], cols_index=['unique_id'])
+
+            best_models_count = errors.idxmin(axis=1).value_counts()
+            best_models_count = pd.Series(best_models_count, index=errors.columns)
+            loser_models = best_models_count[best_models_count.isna()].index.to_list()
+
+            if len(loser_models) > 0:
+                print('Models {} never win.'.format(' '.join(loser_models)))
+                print('Removing it...\n')
+                errors = errors.copy().drop(columns=loser_models)
+
             self.contribution_to_error = errors.values
             best_models = self.contribution_to_error.argmin(axis=1)
 
@@ -166,7 +174,6 @@ class FFORMA:
             feats, holdout_feats = self._tsfeatures(y_train_df, y_val_df, freq)
         else:
             assert holdout_feats is not None, "when passing feats you must provide holdout feats"
-            _check_valid_columns(feats, cols=['unique_id'], cols_index=['unique_id'])
 
         self.lgb = self._train(holdout_feats, best_models)
 
