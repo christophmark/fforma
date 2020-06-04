@@ -7,7 +7,6 @@ from copy import deepcopy
 from tqdm import tqdm
 from sklearn.utils.validation import check_is_fitted
 from ESRNN.utils_evaluation import smape, mase, evaluate_panel
-from pathos.multiprocessing import ProcessingPool
 from collections import ChainMap
 from functools import partial
 import dask

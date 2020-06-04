@@ -48,7 +48,7 @@ def prepare_to_train_fforma(dataset, validation_periods, seasonality):
 
     #Calculating actual predictins
     meta_models = MetaModels(meta_models)
-    meta_models.fit(y_complete_train_df)
+    meta_models.fit(y_train_df)
 
     predictions = meta_models.predict(y_test_df[['unique_id', 'ds']]))
 
@@ -56,7 +56,7 @@ def prepare_to_train_fforma(dataset, validation_periods, seasonality):
 
 
 def main():
-    complete_errors, complete_features, complete_features = [], [], []
+    complete_errors, complete_features, complete_predictions = [], [], []
 
     for dataset in ['Weekly']: #'Daily', etc
         validation_periods = seas_dict[dataset]['output_size']
