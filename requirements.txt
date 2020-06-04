@@ -27,3 +27,4 @@ supersmoother==0.4
 threadpoolctl==2.1.0
 tqdm==4.46.0
 rpy2==3.3.3
+git+https://github.com/FedericoGarza/tsfeatures
