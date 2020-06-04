@@ -6,7 +6,7 @@ import copy
 
 from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import train_test_split
-
+from tqdm import tqdm
 
 def _train_lightgbm(holdout_feats, best_models,
                     params, fobj, feval,
@@ -28,7 +28,6 @@ def _train_lightgbm(holdout_feats, best_models,
 
     params['num_class'] = len(np.unique(best_models))
 
-    print(10*'='+'Training FFORMA'+10*'='+'\n')
     if fobj is not None:
 
         dtrain = lgb.Dataset(data=holdout_feats_train, label=indices_train)
@@ -63,7 +62,6 @@ def _train_lightgbm(holdout_feats, best_models,
 
     return gbm_model
 
-# Functions for training lightgbm
 def _train_lightgbm_cv(holdout_feats, best_models,
                        params, fobj, feval,
                        early_stopping_rounds,
@@ -116,31 +114,49 @@ def _train_lightgbm_cv(holdout_feats, best_models,
 
     return optimal_rounds, best_performance
 
-def _train_lightgbm_cv_optimal_params(param_grid):
+def _train_lightgbm_grid_search(holdout_feats, best_models,
+                                use_cv, init_params,
+                                param_grid, fobj, feval,
+                                early_stopping_rounds,
+                                verbose_eval, seed,
+                                folds):
 
     best_params = {}
     best_performance = np.inf
-    for iter, params in enumerate(ParameterGrid(param_grid), start=1):
 
-        params = {**params, **self.init_params}
-        num_round, performance = self._train_lightgbm_cv(params)
+    pbar = tqdm(ParameterGrid(param_grid))
+    pbar.set_description('Best performance: ??')
 
-        if self.verbose_eval_grid:
-            if isinstance(self.verbose_eval_grid, int):
-                if iter % self.verbose_eval_grid == 0:
-                    print('Searching: {}'.format(iter))
-                    print('Loss CV: {}'.format(performance))
-                    print('\n\n')
-            else:
-                print('Searching: {}'.format(iter))
-                print('Loss CV: {}'.format(performance))
+    for params in pbar:
 
-                print('\n\n')
+        params = {**params, **init_params}
+
+        if use_cv:
+            num_round, performance =  _train_lightgbm_cv(holdout_feats, best_models,
+                                                         params, fobj, feval,
+                                                         early_stopping_rounds,
+                                                         False, seed,
+                                                         folds, train_model=False)
+        else:
+            gbm_model = _train_lightgbm(holdout_feats, best_models,
+                                        params, fobj, feval,
+                                        early_stopping_rounds,
+                                        False, seed)
+            performance = list(gbm_model.best_score['valid_1'].values())[0]
+            num_round = gbm_model.best_iteration
 
         if performance < best_performance:
+            #Updating  best performance
+            pbar.set_description('Best performance: {}'.format(performance))
+            #Updating bars
             best_params = params
             best_performance = performance
             best_params['n_estimators'] = num_round
 
 
-    return _train_lightgbm(best_params)
+    optimal_gbm_model = _train_lightgbm(holdout_feats, best_models,
+                                        best_params, fobj, feval,
+                                        early_stopping_rounds,
+                                        False, seed)
+
+    return optimal_gbm_model

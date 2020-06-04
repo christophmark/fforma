@@ -4,14 +4,13 @@ import multiprocessing as mp
 import lightgbm as lgb
 
 import copy
-import tqdm
 
 from sklearn.model_selection import StratifiedKFold
 from scipy.special import softmax
 from tsfeatures import tsfeatures
 from math import isclose
 from fforma.utils_input import _check_valid_df, _check_same_type, _check_passed_dfs, _check_valid_columns
-from fforma.utils_models import _train_lightgbm, _train_lightgbm_cv, _train_lightgbm_cv_optimal_params
+from fforma.utils_models import _train_lightgbm, _train_lightgbm_cv, _train_lightgbm_grid_search
 
 
 
@@ -38,7 +37,8 @@ class FFORMA:
         ** References: **
         <https://robjhyndman.com/publications/fforma/>
         """
-        self.dict_obj = {'FFORMA': (self.fforma_objective, self.fforma_loss)}
+        self.dict_obj = {'FFORMA': (self.fforma_objective, self.fforma_loss),
+                         'FFORMADL': (self.fformadl_objective, self.fformadl_loss)}
 
         fobj, feval = self.dict_obj.get(objective, (None, None))
         self.objective, self.greedy_search = objective, greedy_search
@@ -49,7 +49,6 @@ class FFORMA:
         init_params = {
             'objective': 'multiclass',
             'nthread': threads,
-            'silent': 1,
             'seed': seed
         }
 
@@ -61,7 +60,12 @@ class FFORMA:
 
 
         if param_grid is not None:
-            pass
+            folds = lambda holdout_feats, best_models: StratifiedKFold(n_splits=nfolds).split(holdout_feats, best_models)
+
+            self._train = lambda holdout_feats, best_models: _train_lightgbm_grid_search(holdout_feats, best_models,
+                                                                                use_cv, init_params, param_grid, fobj, feval,
+                                                                                early_stopping_rounds, verbose_eval,
+                                                                                seed, folds)
         elif use_cv:
             folds = lambda holdout_feats, best_models: StratifiedKFold(n_splits=nfolds).split(holdout_feats, best_models)
 
@@ -124,7 +128,7 @@ class FFORMA:
             val_periods=None,
             errors=None, holdout_feats=None,
             feats=None, freq=None, base_model=None,
-            sorted_data=False):
+            sorted_data=False, weights=None):
         """
         y_train_df: pandas df
             panel with columns unique_id, ds, y
@@ -137,7 +141,7 @@ class FFORMA:
 
         if (errors is None) and (feats is None):
             assert (y_train_df is not None) and (y_val_df is not None), "you must provide a y_train_df and y_val_df"
-            is_pandas_df = self._check_passed_dfs(y_train_df, y_val_df_)
+            is_pandas_df = _check_passed_dfs(y_train_df, y_val_df_)
 
             if not sorted_data:
                 if is_pandas_df:
@@ -152,6 +156,16 @@ class FFORMA:
             #calculate contribution_to_error(y_train_df, y_val_df)
         else:
             _check_valid_columns(errors, cols=['unique_id'], cols_index=['unique_id'])
+
+            best_models_count = errors.idxmin(axis=1).value_counts()
+            best_models_count = pd.Series(best_models_count, index=errors.columns)
+            loser_models = best_models_count[best_models_count.isna()].index.to_list()
+
+            if len(loser_models) > 0:
+                print('Models {} never win.'.format(' '.join(loser_models)))
+                print('Removing it...\n')
+                errors = errors.copy().drop(columns=loser_models)
+
             self.contribution_to_error = errors.values
             best_models = self.contribution_to_error.argmin(axis=1)
 
@@ -160,7 +174,6 @@ class FFORMA:
             feats, holdout_feats = self._tsfeatures(y_train_df, y_val_df, freq)
         else:
             assert holdout_feats is not None, "when passing feats you must provide holdout feats"
-            _check_valid_columns(feats, cols=['unique_id'], cols_index=['unique_id'])
 
         self.lgb = self._train(holdout_feats, best_models)
 
