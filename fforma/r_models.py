@@ -2,14 +2,16 @@
 # coding: utf-8
 
 import pandas as pd
-import rpy2.robjects as robjects
 
+from copy import deepcopy
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 from rpy2.robjects.packages import importr
-from rpy2.robjects import pandas2ri
-from rpy2.robjects.vectors import IntVector
-from copy import deepcopy
+from rpy2.robjects import pandas2ri, numpy2ri
+from rpy2.robjects.vectors import IntVector, FloatVector
+from rpy2.rinterface_lib import openrlib
+import rpy2.robjects as robjects
+
 
 forecast = importr('forecast')
 
@@ -29,11 +31,12 @@ def get_forecast(fitted_model, h):
 
     return y_hat
 
-def get_fitted_forecast_model(y, freq, model, **kwargs):
+def fit_forecast_model(y, freq, model, **kwargs):
     """Wrapper of the following flow:
         - Load _forecast_ package.
         - Transform data into a ts object.
-        - Train the model.
+        - Fit the model.
+        - Make forecast.
 
     Parameters
     ----------
@@ -44,6 +47,8 @@ def get_fitted_forecast_model(y, freq, model, **kwargs):
         Frequency of the time series.
         Can be multiple seasonalities. (Last seasonality
         considered as frequency.)
+    h: int
+        Periods to predict.
     kwargs:
         Arguments of the model function.
 
@@ -53,6 +58,9 @@ def get_fitted_forecast_model(y, freq, model, **kwargs):
         Fitted model
     """
 
+
+    pandas2ri.activate()
+
     freq = deepcopy(freq)
     if isinstance(freq, int):
         freq = freq
@@ -61,17 +69,18 @@ def get_fitted_forecast_model(y, freq, model, **kwargs):
 
     rstring = """
      function(y, freq, ...){
-         library(forecast)
+         suppressMessages(library(forecast))
          y_ts <- msts(y, seasonal.periods=freq)
          fitted_model<-%s(y_ts, ...)
          fitted_model
      }
     """ % (model)
-    pandas2ri.activate()
-    rfunc = robjects.r(rstring)
-    fitted_model = rfunc(y, freq, **kwargs)
 
-    return fitted_model
+    rfunc = robjects.r(rstring)
+
+    fitted = rfunc(FloatVector(y), freq, **kwargs)
+
+    return fitted
 
 class ForecastModel(BaseEstimator, RegressorMixin):
     """Wrapper for models in the R package _forecast_ that returns a model.
@@ -95,22 +104,23 @@ class ForecastModel(BaseEstimator, RegressorMixin):
         self.kwargs = kwargs
 
     def fit(self, y):
-        self.fitted_model_ = get_fitted_forecast_model(y, self.freq, self.model, **self.kwargs)
+        self.fitted_model_ = fit_forecast_model(y, self.freq, self.model, **self.kwargs)
 
         return self
 
     def predict(self, h):
         check_is_fitted(self, 'fitted_model_')
+
         y_hat = get_forecast(self.fitted_model_, h)
 
         return y_hat
 
 class ForecastObject(BaseEstimator, RegressorMixin):
-    """Wrapper for models in the R package _forecast_ that returns a forecast object.
+    """Wrapper for models in the R package _forecast_ that returns a model.
 
     Parameters
     ----------
-    model: rpy2 object
+    model: str
         Name of a model included in the
         _forecast_ package. Ej. 'auto.arima'.
     freq: int or iterable
@@ -133,8 +143,8 @@ class ForecastObject(BaseEstimator, RegressorMixin):
 
     def predict(self, h):
         check_is_fitted(self, 'y_ts_')
-        fitted_model = get_fitted_forecast_model(self.y_ts_, self.freq, self.model, h=h, **self.kwargs)
 
+        fitted_model = fit_forecast_model(self.y_ts_, self.freq, self.model, h=h, **self.kwargs)
         y_hat = get_forecast(fitted_model, h)
 
         return y_hat
@@ -190,10 +200,14 @@ class TBATS(ForecastModel):
         Frequency of the time series.
         Can be multiple seasonalities. (Last seasonality
         considered as frequency.)
+
+    Notes
+    -----
+        - Disabling parallel mode by default.
     """
 
     def __init__(self, freq, **kwargs):
-        super().__init__(model='tbats', freq=freq, **kwargs)
+        super().__init__(model='tbats', freq=freq, **{'use.parallel': False}, **kwargs)
 
 class STLM(ForecastModel):
     """Wrapper of forecast::stlm from R.
@@ -206,10 +220,15 @@ class STLM(ForecastModel):
         considered as frequency.)
     """
 
-    def __init__(self, freq=7, **kwargs):
+    def __init__(self, freq, **kwargs):
+        assert freq > 1, "STLM cannot handle non seasonal time series"
         super().__init__(model='stlm', freq=freq, **kwargs)
 
-class RandomWalk(ForecastModel, BaseEstimator, RegressorMixin):
+##############################################################################
+######## FORECAST OBJECTS ####################################################
+#############################################################################
+
+class RandomWalk(ForecastObject):
     """Wrapper of forecast::rwf from R.
 
     Parameters

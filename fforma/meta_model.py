@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import numpy as np
+import pandas as pd
 
 from copy import deepcopy
 from tqdm import tqdm
@@ -12,6 +13,9 @@ from functools import partial
 import dask
 from dask.diagnostics import ProgressBar
 from rpy2.robjects import pandas2ri
+from dask.distributed import Client, LocalCluster
+from dask import dataframe as dd
+from itertools import product
 
 
 class MetaModels:
@@ -24,9 +28,9 @@ class MetaModels:
         Dictionary of models to train. Ej {'ARIMA': ARIMA()}
     """
 
-    def __init__(self, models, dask_client=None):
+    def __init__(self, models, scheduler='processes'):
         self.models = models
-        self.dask_client = dask_client
+        self.scheduler = scheduler
 
     def fit(self, y_panel_df):
         """For each time series fit each model in models.
@@ -34,14 +38,26 @@ class MetaModels:
         y_panel_df: pandas df
             Pandas DataFrame with columns ['unique_id', 'ds', 'y']
         """
-        if self.dask_client is not None:
-            fit_single_ts_p = partial(fit_single_ts, models=self.models)
-            futures = self.dask_client.map(fit_single_ts_p, y_panel_df.groupby('unique_id'))
-            fitted_models = self.dask_client.gather(futures)
-        else:
-            fitted_models = [fit_single_ts(x, self.models) for x in tqdm(y_panel_df.groupby('unique_id'))]
 
-        self.fitted_models_ = dict(ChainMap(*fitted_models))
+        fitted_models = []
+        uids = []
+        name_models = []
+        for ts, meta_model in product(y_panel_df.groupby('unique_id'), self.models.items()):
+            uid, y = ts
+            y = y['y'].values
+            name_model, model = deepcopy(meta_model)
+            fitted_model = dask.delayed(model.fit)(y)
+            fitted_models.append(fitted_model)
+            uids.append(uid)
+            name_models.append(name_model)
+
+        fitted_models = dask.delayed(fitted_models).compute(scheduler=self.scheduler)
+
+        fitted_models = pd.DataFrame.from_dict({'unique_id': uids,
+                                                'model': name_models,
+                                                'fitted_model': fitted_models})
+
+        self.fitted_models_ = fitted_models.set_index(['unique_id', 'model'])
 
         return self
 
@@ -53,38 +69,48 @@ class MetaModels:
         """
         check_is_fitted(self, 'fitted_models_')
 
-        y_hat_df = deepcopy(y_hat_df)
+        y_hat_df = deepcopy(y_hat_df[['unique_id', 'ds']])
 
-        for col in self.models.keys():
-            y_hat_df[col] = None
+        forecasts = []
+        uids = []
+        dss = []
+        name_models = []
+        for ts, name_model in product(y_hat_df.groupby('unique_id'), self.models.keys()):
+            uid, df = ts
+            h = len(df)
+            model = self.fitted_models_.loc[(uid, name_model)]
+            model = model.item()
+            y_hat = dask.delayed(model.predict)(h)
+            forecasts.append(y_hat)
+            uids.append(np.repeat(uid, h))
+            dss.append(df['ds'])
+            name_models.append(np.repeat(name_model, h))
 
-        for key, value in self.fitted_models_.items():
-            filter_key = y_hat_df['unique_id'] == key
-            y_df = y_hat_df.loc[filter_key]
-            for model_name, model in value.items():
-                y_hat_df.loc[filter_key, model_name] = model.predict(len(y_df))
+        forecasts = dask.delayed(forecasts).compute(scheduler=self.scheduler)
+        forecasts = zip(uids, dss, name_models, forecasts)
 
-        return y_hat_df
+        forecasts_df = []
+        for uid, ds, name_model, forecast in forecasts:
+            dict_df = {'unique_id': uid,
+                       'ds': ds,
+                       'model': name_model,
+                       'forecast': forecast}
+            df = dask.delayed(pd.DataFrame.from_dict)(dict_df)
+            forecasts_df.append(df)
+
+        forecasts = dask.delayed(forecasts_df).compute()
+        forecasts = pd.concat(forecasts)
+
+        forecasts = forecasts.set_index(['unique_id', 'ds', 'model']).unstack()
+        forecasts = forecasts.droplevel(0, 1).reset_index()
+        forecasts.columns.name = ''
+
+
+        return forecasts
 
 ################################################################################
 ########## UTILS FOR FFORMA FLOW
 ###############################################################################
-
-def fit_single_model(model, y):
-    this_model = deepcopy(model)
-    fitted_model = this_model.fit(y)
-
-    return fitted_model
-
-def fit_single_ts(x, models):
-    idx, df = x
-    fitted_ts = {
-        name_model: fit_single_model(model, df['y'].values) for name_model, model in models.items()
-    }
-
-    fitted_ts = {idx: fitted_ts}
-
-    return fitted_ts
 
 def temp_holdout(y_panel_df, val_periods):
     """Splits the data in train and validation sets.
