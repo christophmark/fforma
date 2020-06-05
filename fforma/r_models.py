@@ -9,9 +9,7 @@ from sklearn.utils.validation import check_is_fitted
 from rpy2.robjects.packages import importr
 from rpy2.robjects import pandas2ri, numpy2ri
 from rpy2.robjects.vectors import IntVector, FloatVector
-from rpy2.rinterface_lib import openrlib
 import rpy2.robjects as robjects
-
 
 forecast = importr('forecast')
 
@@ -36,7 +34,6 @@ def fit_forecast_model(y, freq, model, **kwargs):
         - Load _forecast_ package.
         - Transform data into a ts object.
         - Fit the model.
-        - Make forecast.
 
     Parameters
     ----------
@@ -47,8 +44,6 @@ def fit_forecast_model(y, freq, model, **kwargs):
         Frequency of the time series.
         Can be multiple seasonalities. (Last seasonality
         considered as frequency.)
-    h: int
-        Periods to predict.
     kwargs:
         Arguments of the model function.
 
@@ -116,13 +111,14 @@ class ForecastModel(BaseEstimator, RegressorMixin):
         return y_hat
 
 class ForecastObject(BaseEstimator, RegressorMixin):
-    """Wrapper for models in the R package _forecast_ that returns a model.
+    """Wrapper for models in the R package _forecast_ that returns an object.
 
     Parameters
     ----------
     model: str
-        Name of a model included in the
-        _forecast_ package. Ej. 'auto.arima'.
+        Name of a model that returns objects
+        and is included in the
+        _forecast_ package. Ej. 'rwf'.
     freq: int or iterable
         Frequency of the time series.
         Can be multiple seasonalities. (Last seasonality

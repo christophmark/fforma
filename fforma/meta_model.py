@@ -4,18 +4,15 @@
 import numpy as np
 import pandas as pd
 
-from copy import deepcopy
-from tqdm import tqdm
-from sklearn.utils.validation import check_is_fitted
-from ESRNN.utils_evaluation import smape, mase, evaluate_panel
+import dask
+
 from collections import ChainMap
 from functools import partial
-import dask
-from dask.diagnostics import ProgressBar
-from rpy2.robjects import pandas2ri
-from dask.distributed import Client, LocalCluster
-from dask import dataframe as dd
 from itertools import product
+from copy import deepcopy
+
+from sklearn.utils.validation import check_is_fitted
+from ESRNN.utils_evaluation import smape, mase, evaluate_panel
 
 
 class MetaModels:
@@ -26,6 +23,10 @@ class MetaModels:
     ----------
     models: dict
         Dictionary of models to train. Ej {'ARIMA': ARIMA()}
+    scheduler: str
+        Dask scheduler. See https://docs.dask.org/en/latest/setup/single-machine.html
+        for details.
+        Using "threads" can cause severe conflicts.
     """
 
     def __init__(self, models, scheduler='processes'):
